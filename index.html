@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>IC4 readout</title>
+<style>
+  :root {
+    --ink:        #14202a;
+    --panel:      #1d2c38;
+    --panel-edge: #2b3f4f;
+    --bright:     #eef4f7;
+    --muted:      #8199a9;
+    --signal:     #f0a537;
+    --fault:      #e0604f;
+    --live:       #5fc9a6;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--bright);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    padding: 18px 16px 48px;
+    max-width: 560px;
+    margin: 0 auto;
+  }
+
+  /* ---- header / connection ---- */
+
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 22px;
+  }
+
+  h1 {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0;
+    flex: 1;
+  }
+
+  .lamp {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex: none;
+  }
+  .lamp[data-state="live"]  { background: var(--live); }
+  .lamp[data-state="fault"] { background: var(--fault); }
+
+  button {
+    font: inherit;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--ink);
+    background: var(--signal);
+    border: 0;
+    border-radius: 7px;
+    padding: 11px 18px;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; }
+  button.ghost {
+    background: transparent;
+    color: var(--bright);
+    box-shadow: inset 0 0 0 1px var(--panel-edge);
+  }
+  button:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 20px; }
+
+  #status {
+    font-size: 14px;
+    color: var(--muted);
+    line-height: 1.5;
+    margin-bottom: 22px;
+    min-height: 21px;
+  }
+  #status.fault { color: var(--fault); }
+
+  /* ---- live readings ---- */
+
+  .readout { margin-bottom: 10px; }
+
+  .primary {
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 20px 22px 18px;
+    margin-bottom: 10px;
+  }
+
+  .pair { display: flex; gap: 10px; margin-bottom: 10px; }
+  .pair > .primary { flex: 1; margin-bottom: 0; }
+
+  .value {
+    font-size: 68px;
+    font-weight: 300;
+    line-height: 0.92;
+    letter-spacing: -0.035em;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+  }
+  .pair .value { font-size: 42px; }
+  .value[data-stale="yes"] { color: var(--muted); }
+
+  .unit {
+    font-size: 14px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+
+  /* ---- diagnostics ---- */
+
+  .diag {
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-top: 20px;
+  }
+
+  .diag h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 12px;
+  }
+
+  .diag p { font-size: 13px; color: var(--muted); margin: 0 0 12px; line-height: 1.5; }
+
+  pre {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    color: var(--bright);
+    background: var(--ink);
+    border-radius: 7px;
+    padding: 12px;
+    margin: 0 0 12px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  pre:last-child { margin-bottom: 0; }
+  pre .warn { color: var(--fault); }
+  pre .ok   { color: var(--live); }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span class="lamp" id="lamp" data-state="idle"></span>
+  <h1>IC4 readout</h1>
+</div>
+
+<div class="controls">
+  <button id="connect">Connect to bike</button>
+  <button id="connectAny" class="ghost">Pick any device</button>
+  <button id="wake" class="ghost">Keep screen on</button>
+</div>
+
+<p id="status">Not connected. Tap connect, then choose the bike from the list.</p>
+
+<div class="readout">
+  <div class="primary">
+    <div class="value" id="v-cadence" data-stale="yes">--</div>
+    <div class="unit">Cadence, rpm</div>
+  </div>
+  <div class="pair">
+    <div class="primary">
+      <div class="value" id="v-power" data-stale="yes">--</div>
+      <div class="unit">Power, watts</div>
+    </div>
+    <div class="primary">
+      <div class="value" id="v-speed" data-stale="yes">--</div>
+      <div class="unit">Speed, km/h</div>
+    </div>
+  </div>
+  <div class="pair">
+    <div class="primary">
+      <div class="value" id="v-resistance" data-stale="yes">--</div>
+      <div class="unit">Resistance level</div>
+    </div>
+    <div class="primary">
+      <div class="value" id="v-rate" data-stale="yes">--</div>
+      <div class="unit">Packets per second</div>
+    </div>
+  </div>
+</div>
+
+<div class="diag">
+  <h2>Decoded packet</h2>
+  <p>Every field the bike actually sends, straight from the last notification. If a number above looks wrong, the answer is here.</p>
+  <pre id="decoded">Waiting for data.</pre>
+</div>
+
+<div class="diag">
+  <h2>Raw bytes</h2>
+  <p>Last packet in hex, with the flags bitfield spelled out. Byte count should match what the decoder consumed.</p>
+  <pre id="raw">Waiting for data.</pre>
+</div>
+
+<div class="diag">
+  <h2>What the bike exposes</h2>
+  <p>Services and characteristics found on connect. Worth keeping a copy of this.</p>
+  <pre id="services">Waiting for connection.</pre>
+</div>
+
+<script>
+'use strict';
+
+// Fitness Machine Service, and the Indoor Bike Data characteristic inside it.
+const FTMS_SERVICE = 0x1826;
+const INDOOR_BIKE_DATA = 0x2ad2;
+
+// Flag bit -> human name, for the raw dump.
+const FLAG_NAMES = [
+  'more data (speed absent)', 'average speed', 'instantaneous cadence',
+  'average cadence', 'total distance', 'resistance level',
+  'instantaneous power', 'average power', 'expended energy',
+  'heart rate', 'metabolic equivalent', 'elapsed time', 'remaining time'
+];
+
+let device = null;
+let packetTimes = [];
+
+const el = id => document.getElementById(id);
+
+function setStatus(text, fault) {
+  const s = el('status');
+  s.textContent = text;
+  s.classList.toggle('fault', !!fault);
+}
+
+function setLamp(state) { el('lamp').dataset.state = state; }
+
+function show(id, text) {
+  const node = el(id);
+  node.textContent = text;
+  node.dataset.stale = 'no';
+}
+
+/*
+ * Parse an FTMS Indoor Bike Data packet.
+ *
+ * Layout: uint16 flags (little-endian), then only the fields whose flag
+ * bit is set, in a fixed order. Two things bite people here:
+ *   - Bit 0 is "More Data" and its logic is INVERTED. When the bit is
+ *     CLEAR, instantaneous speed is present.
+ *   - Cadence has 0.5 rpm resolution, so the raw value is halved. Skip
+ *     that and you'll see roughly double the real number.
+ */
+function parseIndoorBikeData(dv) {
+  const flags = dv.getUint16(0, true);
+  const f = {};
+  let i = 2;
+
+  if (!(flags & 0x0001)) { f['Instantaneous speed'] = (dv.getUint16(i, true) * 0.01).toFixed(2) + ' km/h'; i += 2; }
+  if (flags & 0x0002)   { f['Average speed']        = (dv.getUint16(i, true) * 0.01).toFixed(2) + ' km/h'; i += 2; }
+  if (flags & 0x0004)   { f['Instantaneous cadence']= (dv.getUint16(i, true) * 0.5).toFixed(1) + ' rpm'; i += 2; }
+  if (flags & 0x0008)   { f['Average cadence']      = (dv.getUint16(i, true) * 0.5).toFixed(1) + ' rpm'; i += 2; }
+  if (flags & 0x0010)   {
+    f['Total distance'] = (dv.getUint8(i) | (dv.getUint8(i + 1) << 8) | (dv.getUint8(i + 2) << 16)) + ' m';
+    i += 3;
+  }
+  if (flags & 0x0020)   { f['Resistance level']     = dv.getInt16(i, true); i += 2; }
+  if (flags & 0x0040)   { f['Instantaneous power']  = dv.getInt16(i, true) + ' W'; i += 2; }
+  if (flags & 0x0080)   { f['Average power']        = dv.getInt16(i, true) + ' W'; i += 2; }
+  if (flags & 0x0100)   {
+    f['Total energy']      = dv.getUint16(i, true) + ' kcal'; i += 2;
+    f['Energy per hour']   = dv.getUint16(i, true) + ' kcal'; i += 2;
+    f['Energy per minute'] = dv.getUint8(i) + ' kcal';        i += 1;
+  }
+  if (flags & 0x0200)   { f['Heart rate']           = dv.getUint8(i) + ' bpm'; i += 1; }
+  if (flags & 0x0400)   { f['Metabolic equivalent'] = (dv.getUint8(i) * 0.1).toFixed(1); i += 1; }
+  if (flags & 0x0800)   { f['Elapsed time']         = dv.getUint16(i, true) + ' s'; i += 2; }
+  if (flags & 0x1000)   { f['Remaining time']       = dv.getUint16(i, true) + ' s'; i += 2; }
+
+  return { flags, fields: f, consumed: i };
+}
+
+function renderRaw(dv, flags, consumed) {
+  const bytes = [];
+  for (let n = 0; n < dv.byteLength; n++) {
+    bytes.push(dv.getUint8(n).toString(16).padStart(2, '0'));
+  }
+
+  const set = [];
+  for (let bit = 0; bit < FLAG_NAMES.length; bit++) {
+    if (flags & (1 << bit)) set.push('  bit ' + bit + '  ' + FLAG_NAMES[bit]);
+  }
+  if (!(flags & 0x0001)) set.unshift('  bit 0  clear, so speed IS present');
+
+  const match = consumed === dv.byteLength
+    ? '<span class="ok">consumed ' + consumed + ' of ' + dv.byteLength + ' bytes, clean</span>'
+    : '<span class="warn">consumed ' + consumed + ' of ' + dv.byteLength +
+      ' bytes, MISMATCH: decoder and bike disagree</span>';
+
+  el('raw').innerHTML =
+    bytes.join(' ') + '\n\n' +
+    'flags 0x' + flags.toString(16).padStart(4, '0') +
+    '  (0b' + flags.toString(2).padStart(13, '0') + ')\n' +
+    set.join('\n') + '\n\n' + match;
+}
+
+function onNotification(event) {
+  const dv = event.target.value;
+
+  let parsed;
+  try {
+    parsed = parseIndoorBikeData(dv);
+  } catch (err) {
+    el('decoded').innerHTML = '<span class="warn">Ran off the end of the packet: ' +
+      err.message + '\nThe raw bytes below are still good.</span>';
+    el('raw').textContent = 'Malformed, ' + dv.byteLength + ' bytes.';
+    return;
+  }
+
+  const { flags, fields, consumed } = parsed;
+
+  // Big numbers.
+  const cad = fields['Instantaneous cadence'];
+  const pwr = fields['Instantaneous power'];
+  const spd = fields['Instantaneous speed'];
+  const res = fields['Resistance level'];
+
+  if (cad !== undefined) show('v-cadence', Math.round(parseFloat(cad)));
+  if (pwr !== undefined) show('v-power', parseInt(pwr, 10));
+  if (spd !== undefined) show('v-speed', parseFloat(spd).toFixed(1));
+  if (res !== undefined) show('v-resistance', res);
+
+  // Notification rate over a rolling second, so you can see if the
+  // stream stalls when the screen dims.
+  const now = performance.now();
+  packetTimes.push(now);
+  packetTimes = packetTimes.filter(t => now - t < 1000);
+  show('v-rate', packetTimes.length);
+
+  const lines = Object.entries(fields).map(([k, v]) => k.padEnd(24) + v);
+  el('decoded').textContent = lines.length ? lines.join('\n') : 'Flags set, but no fields decoded.';
+
+  renderRaw(dv, flags, consumed);
+}
+
+async function dumpServices(server) {
+  const out = [];
+  try {
+    const services = await server.getPrimaryServices();
+    for (const svc of services) {
+      out.push(svc.uuid);
+      try {
+        const chars = await svc.getCharacteristics();
+        for (const c of chars) {
+          const props = Object.entries({
+            read: c.properties.read,
+            write: c.properties.write,
+            notify: c.properties.notify,
+            indicate: c.properties.indicate
+          }).filter(([, on]) => on).map(([name]) => name).join(', ');
+          out.push('    ' + c.uuid + '  [' + (props || 'none') + ']');
+        }
+      } catch (err) {
+        out.push('    could not enumerate: ' + err.message);
+      }
+    }
+  } catch (err) {
+    out.push('Service discovery failed: ' + err.message);
+  }
+  el('services').textContent = out.join('\n') || 'Nothing found.';
+}
+
+function onDisconnect() {
+  setLamp('fault');
+  setStatus('Bike disconnected. Tap connect to pick it up again.', true);
+  document.querySelectorAll('.value').forEach(v => { v.dataset.stale = 'yes'; });
+}
+
+async function connect(pickAny) {
+  if (!navigator.bluetooth) {
+    setStatus('This browser has no Web Bluetooth. On iPhone you need Bluefy, not Safari.', true);
+    setLamp('fault');
+    return;
+  }
+
+  try {
+    setStatus('Opening the device picker.');
+
+    device = pickAny
+      ? await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: [FTMS_SERVICE]
+        })
+      : await navigator.bluetooth.requestDevice({
+          filters: [{ services: [FTMS_SERVICE] }],
+          optionalServices: [FTMS_SERVICE]
+        });
+
+    device.addEventListener('gattserverdisconnected', onDisconnect);
+
+    setStatus('Connecting to ' + (device.name || 'the device') + '.');
+    const server = await device.gatt.connect();
+
+    await dumpServices(server);
+
+    const service = await server.getPrimaryService(FTMS_SERVICE);
+    const characteristic = await service.getCharacteristic(INDOOR_BIKE_DATA);
+    await characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', onNotification);
+
+    setLamp('live');
+    setStatus('Connected to ' + (device.name || 'device') + '. Start pedalling.');
+  } catch (err) {
+    setLamp('fault');
+    if (err.name === 'NotFoundError') {
+      setStatus('No device chosen, or nothing advertising the fitness machine service. ' +
+                'Wake the console and press its Bluetooth button, then try "Pick any device".', true);
+    } else {
+      setStatus(err.name + ': ' + err.message, true);
+    }
+  }
+}
+
+async function keepAwake() {
+  if (!('wakeLock' in navigator)) {
+    setStatus('No screen wake lock in this browser. The screen will sleep and the stream will stall.', true);
+    return;
+  }
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    setStatus('Screen will stay on while this page is open.');
+    lock.addEventListener('release', () => setStatus('Screen lock released.'));
+  } catch (err) {
+    setStatus('Wake lock refused: ' + err.message, true);
+  }
+}
+
+el('connect').addEventListener('click', () => connect(false));
+el('connectAny').addEventListener('click', () => connect(true));
+el('wake').addEventListener('click', keepAwake);
+</script>
+
+</body>
+</html>
