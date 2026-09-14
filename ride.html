@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Spin Doctor</title>
+<style>
+  :root {
+    --ink:        #14202a;
+    --panel:      #1d2c38;
+    --panel-edge: #2b3f4f;
+    --bright:     #eef4f7;
+    --muted:      #8199a9;
+    --signal:     #f0a537;
+    --fault:      #e0604f;
+    --live:       #5fc9a6;
+    --low:        #6aa9d8;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--bright);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body { padding: 14px 14px 40px; max-width: 560px; margin: 0 auto; }
+
+  button {
+    font: inherit; font-size: 15px; font-weight: 500;
+    color: var(--ink); background: var(--signal);
+    border: 0; border-radius: 7px; padding: 11px 16px; cursor: pointer;
+  }
+  button.ghost {
+    background: transparent; color: var(--bright);
+    box-shadow: inset 0 0 0 1px var(--panel-edge);
+  }
+  button:disabled { opacity: 0.35; }
+  button:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+
+  /* ---------- setup view ---------- */
+
+  .panel {
+    background: var(--panel); border-radius: 12px;
+    padding: 15px 17px; margin-bottom: 12px;
+  }
+  .panel h2 { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
+  .panel p { font-size: 13px; color: var(--muted); margin: 0 0 10px; line-height: 1.5; }
+
+  .check { display: flex; align-items: center; gap: 10px; font-size: 14px; padding: 5px 0; }
+  .check .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .check[data-ok="yes"] .dot { background: var(--live); }
+  .check[data-ok="no"]  .dot { background: var(--fault); }
+  .check .who { flex: 1; }
+  .check .detail { font-size: 13px; color: var(--muted); }
+
+  select {
+    font: inherit; font-size: 15px; width: 100%;
+    color: var(--bright); background: var(--ink);
+    border: 0; box-shadow: inset 0 0 0 1px var(--panel-edge);
+    border-radius: 7px; padding: 12px 13px;
+  }
+
+  /* ---------- ride view ---------- */
+
+  #ride { display: none; }
+  body[data-view="ride"] #setup { display: none; }
+  body[data-view="ride"] #ride  { display: block; }
+
+  .cue {
+    font-size: 19px; font-weight: 500; line-height: 1.35;
+    padding: 14px 16px; margin-bottom: 10px;
+    background: var(--panel); border-radius: 12px;
+    border-left: 4px solid var(--signal);
+  }
+  .cue .block { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+
+  .target {
+    background: var(--panel); border-radius: 12px;
+    padding: 16px 18px 14px; margin-bottom: 10px;
+    transition: background-color 120ms linear;
+  }
+  .target[data-zone="in"]   { background: #1e3a33; }
+  .target[data-zone="over"] { background: #3a2822; }
+  .target[data-zone="under"]{ background: #1d2f3f; }
+
+  .actual {
+    font-size: 76px; font-weight: 300; line-height: 0.9;
+    letter-spacing: -0.04em;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  }
+  .actual[data-zone="in"]   { color: var(--live); }
+  .actual[data-zone="over"] { color: var(--signal); }
+  .actual[data-zone="under"]{ color: var(--low); }
+
+  .goal { font-size: 15px; color: var(--muted); margin-top: 9px; }
+
+  .row { display: flex; gap: 10px; margin-bottom: 10px; }
+  .row > .tile { flex: 1; background: var(--panel); border-radius: 12px; padding: 13px 15px 11px; }
+  .tile .n {
+    font-size: 32px; font-weight: 300; line-height: 1;
+    letter-spacing: -0.03em;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  }
+  .tile .l { font-size: 12px; color: var(--muted); margin-top: 7px; }
+
+  .bar {
+    height: 5px; background: var(--ink); border-radius: 3px;
+    overflow: hidden; margin-bottom: 12px;
+  }
+  .bar span { display: block; height: 100%; background: var(--signal); width: 0; }
+
+  pre {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; line-height: 1.6;
+    color: var(--bright); background: var(--ink);
+    border-radius: 7px; padding: 11px; margin: 0;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+
+  #msg { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 0 0 12px; min-height: 19px; }
+  #msg.fault { color: var(--fault); }
+</style>
+</head>
+<body data-view="setup">
+
+<!-- ==================== SETUP ==================== -->
+<div id="setup">
+
+  <div class="panel">
+    <h2>Spin Doctor</h2>
+    <div class="check" id="c-spotify" data-ok="">
+      <span class="dot"></span><span class="who">Spotify</span>
+      <span class="detail" id="d-spotify">checking</span>
+    </div>
+    <div class="check" id="c-bike" data-ok="">
+      <span class="dot"></span><span class="who">Bike</span>
+      <span class="detail" id="d-bike">not connected</span>
+    </div>
+    <div class="check" id="c-hr" data-ok="">
+      <span class="dot"></span><span class="who">Heart rate</span>
+      <span class="detail" id="d-hr">optional</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="connectBike">Connect bike</button>
+    <button id="connectHr" class="ghost">Connect heart rate</button>
+  </div>
+
+  <div class="panel">
+    <h2>Ride</h2>
+    <select id="ridePick"></select>
+  </div>
+
+  <p id="msg">Connect the bike, pick a ride, then start.</p>
+
+  <div class="controls">
+    <button id="start" disabled>Start ride</button>
+  </div>
+
+</div>
+
+<!-- ==================== RIDE ==================== -->
+<div id="ride">
+
+  <div class="bar"><span id="progress"></span></div>
+
+  <div class="cue">
+    <div class="block" id="blockName">--</div>
+    <div id="cueText">Waiting for playback</div>
+  </div>
+
+  <div class="target" id="cadTarget" data-zone="">
+    <div class="actual" id="cadActual" data-zone="">--</div>
+    <div class="goal" id="cadGoal">cadence</div>
+  </div>
+
+  <div class="row">
+    <div class="tile">
+      <div class="n" id="resActual">--</div>
+      <div class="l" id="resGoal">resistance</div>
+    </div>
+    <div class="tile">
+      <div class="n" id="pwrActual">--</div>
+      <div class="l">watts</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="tile">
+      <div class="n" id="hrActual">--</div>
+      <div class="l">bpm</div>
+    </div>
+    <div class="tile">
+      <div class="n" id="elapsed">0:00</div>
+      <div class="l">elapsed</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="stop" class="ghost">End ride</button>
+  </div>
+
+  <div class="panel" id="summaryPanel" style="display:none">
+    <h2>Summary</h2>
+    <pre id="summary"></pre>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+
+/* ============================================================
+ *                      RIDE DEFINITIONS
+ *
+ * One entry per ride. `playlist` is the Spotify playlist URI.
+ * `blocks` maps a track to what you should be doing while it plays.
+ *
+ * Track URIs: in Spotify, long-press a track > Share > Copy link,
+ * then take the id out of the URL. The id in
+ * open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT becomes
+ * spotify:track:4cOdK2wGLETKBW3PvgPWqT
+ *
+ * `segments` are offsets in SECONDS from the start of that track.
+ * The engine picks the last segment whose `at` has passed, so put
+ * them in ascending order. One segment per track is fine; several
+ * gives you intervals inside a single song.
+ *
+ * cadence and resistance are [min, max] ranges. Leave resistance
+ * out if you don't want a target for it, since the bike can't be
+ * driven anyway and it's your knob to turn.
+ * ============================================================ */
+
+const RIDES = [
+  {
+    name: 'Example ride, replace me',
+    playlist: 'spotify:playlist:REPLACE_WITH_YOUR_PLAYLIST',
+    blocks: [
+      {
+        track: 'spotify:track:REPLACE_TRACK_ONE',
+        label: 'Warmup',
+        segments: [
+          { at: 0,  cadence: [80, 90],  resistance: [20, 28], cue: 'Easy spin. Find your position.' },
+          { at: 90, cadence: [85, 95],  resistance: [28, 34], cue: 'Pick it up a little.' }
+        ]
+      },
+      {
+        track: 'spotify:track:REPLACE_TRACK_TWO',
+        label: 'Climb',
+        segments: [
+          { at: 0,  cadence: [60, 70], resistance: [55, 65], cue: 'Out of the saddle. Heavy and slow.' },
+          { at: 60, cadence: [70, 80], resistance: [42, 50], cue: 'Sit down. Keep the legs moving.' },
+          { at: 120, cadence: [60, 70], resistance: [55, 65], cue: 'Back up. Same as before.' }
+        ]
+      },
+      {
+        track: 'spotify:track:REPLACE_TRACK_THREE',
+        label: 'Sprints',
+        segments: [
+          { at: 0,  cadence: [95, 110], resistance: [35, 42], cue: 'Sprint. Twenty seconds.' },
+          { at: 20, cadence: [70, 80],  resistance: [30, 36], cue: 'Recover.' },
+          { at: 50, cadence: [95, 110], resistance: [35, 42], cue: 'Again. Twenty seconds.' },
+          { at: 70, cadence: [70, 80],  resistance: [30, 36], cue: 'Recover.' }
+        ]
+      }
+    ]
+  }
+];
+
+/* ============================================================ */
+
+const FTMS_SERVICE     = '00001826-0000-1000-8000-00805f9b34fb';
+const INDOOR_BIKE_DATA = '00002ad2-0000-1000-8000-00805f9b34fb';
+const HR_SERVICE       = '0000180d-0000-1000-8000-00805f9b34fb';
+const HR_MEASUREMENT   = '00002a37-0000-1000-8000-00805f9b34fb';
+
+const TOKEN_URL = 'https://accounts.spotify.com/api/token';
+const API = 'https://api.spotify.com/v1';
+
+// How often to ask Spotify where we are. Between polls the position is
+// advanced from the wall clock, so this can be lazy without the display
+// getting choppy. One-second polling would be roughly 2,700 calls in a
+// 45 minute ride, which development mode rate limits will not tolerate.
+const POLL_MS = 4000;
+
+const el = id => document.getElementById(id);
+
+function msg(text, fault) {
+  const m = el('msg');
+  m.textContent = text;
+  m.classList.toggle('fault', !!fault);
+}
+
+function check(name, ok, detail) {
+  el('c-' + name).dataset.ok = ok ? 'yes' : 'no';
+  el('d-' + name).textContent = detail;
+}
+
+/* ---------------- token, shared with the test page ---------------- */
+
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+async function refreshToken() {
+  const rt = load('refresh_token');
+  if (!rt) return false;
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: load('client_id'),
+      grant_type: 'refresh_token',
+      refresh_token: rt
+    })
+  });
+  if (!res.ok) return false;
+  const data = await res.json();
+  store('access_token', data.access_token);
+  if (data.refresh_token) store('refresh_token', data.refresh_token);
+  store('expires_at', String(Date.now() + data.expires_in * 1000));
+  return true;
+}
+
+async function call(path, options, retried) {
+  const token = load('access_token');
+  if (!token) return null;
+
+  let res;
+  try {
+    res = await fetch(API + path, Object.assign({}, options, {
+      headers: Object.assign({ Authorization: 'Bearer ' + token }, (options || {}).headers)
+    }));
+  } catch (e) {
+    return null;  // network blip, next poll will recover
+  }
+
+  if (res.status === 401 && !retried) {
+    if (await refreshToken()) return call(path, options, true);
+    return null;
+  }
+  if (res.status === 429) {
+    msg('Spotify is rate limiting. Backing off.', true);
+    return null;
+  }
+  if (res.status === 204) return { empty: true };
+  if (!res.ok) return null;
+
+  try { return await res.json(); } catch (e) { return { empty: true }; }
+}
+
+/* ---------------- bike ---------------- */
+
+let bike = { cadence: null, power: null, resistance: null, speed: null, lastAt: 0 };
+
+function parseIndoorBikeData(dv) {
+  const flags = dv.getUint16(0, true);
+  let i = 2;
+  const out = {};
+
+  if (!(flags & 0x0001)) { out.speed = dv.getUint16(i, true) * 0.01; i += 2; }
+  if (flags & 0x0002)   { i += 2; }                                    // average speed
+  if (flags & 0x0004)   { out.cadence = dv.getUint16(i, true) * 0.5; i += 2; }
+  if (flags & 0x0008)   { i += 2; }                                    // average cadence
+  if (flags & 0x0010)   { i += 3; }                                    // total distance
+  if (flags & 0x0020)   { out.resistance = dv.getInt16(i, true); i += 2; }
+  if (flags & 0x0040)   { out.power = dv.getInt16(i, true); i += 2; }
+  return out;
+}
+
+function onBikeData(event) {
+  const d = parseIndoorBikeData(event.target.value);
+  if (d.cadence !== undefined)    bike.cadence = d.cadence;
+  if (d.power !== undefined)      bike.power = d.power;
+  if (d.resistance !== undefined) bike.resistance = d.resistance;
+  if (d.speed !== undefined)      bike.speed = d.speed;
+  bike.lastAt = performance.now();
+  accumulate();
+}
+
+async function connectBike() {
+  try {
+    msg('Pick the bike.');
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [FTMS_SERVICE] }],
+      optionalServices: [FTMS_SERVICE]
+    });
+    dev.addEventListener('gattserverdisconnected', () => {
+      check('bike', false, 'disconnected');
+      msg('Bike dropped out. Reconnect from the setup screen.', true);
+    });
+    const server = await dev.gatt.connect();
+    const svc = await server.getPrimaryService(FTMS_SERVICE);
+    const ch = await svc.getCharacteristic(INDOOR_BIKE_DATA);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', onBikeData);
+
+    check('bike', true, dev.name || 'connected');
+    msg('Bike connected.');
+    refreshStartButton();
+  } catch (err) {
+    check('bike', false, 'failed');
+    msg('Bike connection failed: ' + (err && err.message ? err.message : String(err)), true);
+  }
+}
+
+/* ---------------- heart rate ---------------- */
+
+let hr = { bpm: null };
+
+function onHeartRate(event) {
+  const dv = event.target.value;
+  const flags = dv.getUint8(0);
+  hr.bpm = (flags & 0x01) ? dv.getUint16(1, true) : dv.getUint8(1);
+  accumulate();
+}
+
+async function connectHr() {
+  try {
+    msg('Start sharing on the monitor, then pick it.');
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [HR_SERVICE] }],
+      optionalServices: [HR_SERVICE]
+    });
+    dev.addEventListener('gattserverdisconnected', () => check('hr', false, 'disconnected'));
+    const server = await dev.gatt.connect();
+    const svc = await server.getPrimaryService(HR_SERVICE);
+    const ch = await svc.getCharacteristic(HR_MEASUREMENT);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', onHeartRate);
+    check('hr', true, dev.name || 'connected');
+    msg('Heart rate connected.');
+  } catch (err) {
+    check('hr', false, 'skipped');
+    msg('No heart rate. Riding without it is fine.');
+  }
+}
+
+/* ---------------- playback position ---------------- */
+
+/*
+ * Spotify is polled every few seconds; between polls the position is
+ * advanced from performance.now(). Each poll resets the anchor, so drift
+ * never accumulates beyond one interval.
+ */
+let anchor = { trackUri: null, progressMs: 0, durationMs: 0, at: 0, playing: false };
+
+function currentPosition() {
+  if (!anchor.trackUri) return 0;
+  if (!anchor.playing) return anchor.progressMs;
+  const advanced = anchor.progressMs + (performance.now() - anchor.at);
+  return Math.min(advanced, anchor.durationMs || advanced);
+}
+
+async function poll() {
+  const state = await call('/me/player');
+  if (!state || state.empty || !state.item) return;
+
+  anchor = {
+    trackUri: state.item.uri,
+    progressMs: state.progress_ms || 0,
+    durationMs: state.item.duration_ms || 0,
+    at: performance.now(),
+    playing: !!state.is_playing
+  };
+}
+
+/* ---------------- the engine ---------------- */
+
+let ride = null;
+let rideStartedAt = 0;
+let tickTimer = null;
+let pollTimer = null;
+
+// Accumulated over the ride, sampled whenever new sensor data arrives.
+let acc = { samples: 0, cadSum: 0, pwrSum: 0, hrSum: 0, hrSamples: 0, inZone: 0, zoned: 0 };
+
+function accumulate() {
+  if (!rideStartedAt) return;
+  acc.samples++;
+  if (bike.cadence !== null) acc.cadSum += bike.cadence;
+  if (bike.power !== null)   acc.pwrSum += bike.power;
+  if (hr.bpm !== null) { acc.hrSum += hr.bpm; acc.hrSamples++; }
+
+  const seg = activeSegment();
+  if (seg && seg.cadence && bike.cadence !== null) {
+    acc.zoned++;
+    if (bike.cadence >= seg.cadence[0] && bike.cadence <= seg.cadence[1]) acc.inZone++;
+  }
+}
+
+function activeBlock() {
+  if (!ride || !anchor.trackUri) return null;
+  return ride.blocks.find(b => b.track === anchor.trackUri) || null;
+}
+
+function activeSegment() {
+  const block = activeBlock();
+  if (!block) return null;
+  const seconds = currentPosition() / 1000;
+  let found = null;
+  for (const seg of block.segments) {
+    if (seconds >= seg.at) found = seg;
+    else break;
+  }
+  return found;
+}
+
+// Small deadband so the colour doesn't strobe when you sit right on the edge.
+function zoneFor(actual, range) {
+  if (actual === null || !range) return '';
+  if (actual < range[0] - 1) return 'under';
+  if (actual > range[1] + 1) return 'over';
+  return 'in';
+}
+
+function fmtTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+
+function tick() {
+  const block = activeBlock();
+  const seg = activeSegment();
+
+  // Cue
+  if (!anchor.trackUri) {
+    el('blockName').textContent = 'No playback';
+    el('cueText').textContent = 'Start the playlist in Spotify.';
+  } else if (!block) {
+    el('blockName').textContent = 'Off script';
+    el('cueText').textContent = 'This track has no block defined. Spin how you like.';
+  } else {
+    el('blockName').textContent = block.label;
+    el('cueText').textContent = seg ? seg.cue : 'Hold steady.';
+  }
+
+  // Cadence, the main event
+  const cad = bike.cadence === null ? null : Math.round(bike.cadence);
+  const cadZone = zoneFor(cad, seg && seg.cadence);
+  el('cadActual').textContent = cad === null ? '--' : cad;
+  el('cadActual').dataset.zone = cadZone;
+  el('cadTarget').dataset.zone = cadZone;
+  el('cadGoal').textContent = seg && seg.cadence
+    ? 'cadence, target ' + seg.cadence[0] + ' to ' + seg.cadence[1] + ' rpm'
+    : 'cadence, rpm';
+
+  // Resistance is advisory, since nothing can turn the knob for you
+  el('resActual').textContent = bike.resistance === null ? '--' : bike.resistance;
+  el('resGoal').textContent = seg && seg.resistance
+    ? 'resistance, aim ' + seg.resistance[0] + ' to ' + seg.resistance[1]
+    : 'resistance';
+
+  el('pwrActual').textContent = bike.power === null ? '--' : bike.power;
+  el('hrActual').textContent = hr.bpm === null ? '--' : hr.bpm;
+  el('elapsed').textContent = fmtTime(performance.now() - rideStartedAt);
+
+  // Progress through the current track
+  const pct = anchor.durationMs ? (currentPosition() / anchor.durationMs) * 100 : 0;
+  el('progress').style.width = Math.min(100, pct) + '%';
+}
+
+async function startRide() {
+  ride = RIDES[parseInt(el('ridePick').value, 10)];
+  if (!ride) return;
+
+  document.body.dataset.view = 'ride';
+  el('summaryPanel').style.display = 'none';
+  rideStartedAt = performance.now();
+  acc = { samples: 0, cadSum: 0, pwrSum: 0, hrSum: 0, hrSamples: 0, inZone: 0, zoned: 0 };
+
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    window._wakeLock = lock;
+  } catch (e) { /* the ride still works, the screen just sleeps */ }
+
+  if (ride.playlist && !ride.playlist.includes('REPLACE')) {
+    await call('/me/player/play', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ context_uri: ride.playlist })
+    });
+  }
+
+  await poll();
+  pollTimer = setInterval(poll, POLL_MS);
+  tickTimer = setInterval(tick, 250);
+  tick();
+}
+
+function stopRide() {
+  clearInterval(pollTimer);
+  clearInterval(tickTimer);
+  pollTimer = tickTimer = null;
+
+  call('/me/player/pause', { method: 'PUT' });
+
+  if (window._wakeLock) { try { window._wakeLock.release(); } catch (e) {} }
+
+  const mins = (performance.now() - rideStartedAt) / 60000;
+  const lines = [
+    'Ride:        ' + ride.name,
+    'Duration:    ' + mins.toFixed(1) + ' min',
+    'Avg cadence: ' + (acc.samples ? (acc.cadSum / acc.samples).toFixed(0) : '--') + ' rpm',
+    'Avg power:   ' + (acc.samples ? (acc.pwrSum / acc.samples).toFixed(0) : '--') + ' W',
+    'Avg heart:   ' + (acc.hrSamples ? (acc.hrSum / acc.hrSamples).toFixed(0) : '--') + ' bpm',
+    'In target:   ' + (acc.zoned ? ((acc.inZone / acc.zoned) * 100).toFixed(0) + '%' : '--')
+  ];
+
+  el('summary').textContent = lines.join('\n');
+  el('summaryPanel').style.display = 'block';
+  rideStartedAt = 0;
+}
+
+function refreshStartButton() {
+  const bikeOk = el('c-bike').dataset.ok === 'yes';
+  const spotOk = el('c-spotify').dataset.ok === 'yes';
+  el('start').disabled = !(bikeOk && spotOk);
+}
+
+/* ---------------- boot ---------------- */
+
+RIDES.forEach((r, i) => {
+  const opt = document.createElement('option');
+  opt.value = String(i);
+  opt.textContent = r.name;
+  el('ridePick').appendChild(opt);
+});
+
+(async function initSpotify() {
+  if (!load('access_token') && !load('refresh_token')) {
+    check('spotify', false, 'sign in on the test page first');
+    return;
+  }
+  const me = await call('/me');
+  if (!me) {
+    check('spotify', false, 'token rejected, re-authenticate');
+    return;
+  }
+  check('spotify', true, (me.display_name || 'signed in') + ', ' + (me.product || '?'));
+  refreshStartButton();
+})();
+
+if (!navigator.bluetooth) {
+  msg('No Web Bluetooth here. Open this in Bluefy, not Safari.', true);
+}
+
+el('connectBike').addEventListener('click', connectBike);
+el('connectHr').addEventListener('click', connectHr);
+el('start').addEventListener('click', startRide);
+el('stop').addEventListener('click', stopRide);
+</script>
+
+</body>
+</html>
