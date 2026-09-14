@@ -156,6 +156,17 @@
   </div>
 
   <div class="panel">
+    <h2>Rider</h2>
+    <p>Which number gets the big display, and the colour feedback.</p>
+    <div class="controls" style="margin-bottom:12px">
+      <button id="focusCadence" class="ghost">Cadence</button>
+      <button id="focusPower" class="ghost">Power</button>
+    </div>
+    <p>FTP, if you want power targets written as percentages. Leave at zero to use absolute watts only.</p>
+    <input type="number" id="ftp" min="0" max="600" placeholder="FTP in watts">
+  </div>
+
+  <div class="panel">
     <h2>Ride</h2>
     <select id="ridePick"></select>
   </div>
@@ -178,19 +189,19 @@
     <div id="cueText">Waiting for playback</div>
   </div>
 
-  <div class="target" id="cadTarget" data-zone="">
-    <div class="actual" id="cadActual" data-zone="">--</div>
-    <div class="goal" id="cadGoal">cadence</div>
+  <div class="target" id="primaryPanel" data-zone="">
+    <div class="actual" id="primaryActual" data-zone="">--</div>
+    <div class="goal" id="primaryGoal">cadence</div>
   </div>
 
   <div class="row">
     <div class="tile">
-      <div class="n" id="resActual">--</div>
-      <div class="l" id="resGoal">resistance</div>
+      <div class="n" id="secondaryActual">--</div>
+      <div class="l" id="secondaryGoal">watts</div>
     </div>
     <div class="tile">
-      <div class="n" id="pwrActual">--</div>
-      <div class="l">watts</div>
+      <div class="n" id="resActual">--</div>
+      <div class="l" id="resGoal">resistance</div>
     </div>
   </div>
 
@@ -219,6 +230,22 @@
 <script>
 'use strict';
 
+/*
+ * The seven-zone model, as percentages of FTP. This is the Coggan model
+ * that Peloton's Power Zone rides and TrainerRoad both build on. Exact
+ * boundaries vary a percent or two between sources; these are the
+ * conventional ones. Adjust if she's used to different numbers.
+ */
+const ZONES = {
+  1: { pct: [30, 55],   name: 'active recovery' },
+  2: { pct: [56, 75],   name: 'endurance' },
+  3: { pct: [76, 90],   name: 'tempo' },
+  4: { pct: [91, 105],  name: 'threshold' },
+  5: { pct: [106, 120], name: 'VO2 max' },
+  6: { pct: [121, 150], name: 'anaerobic' },
+  7: { pct: [151, 200], name: 'neuromuscular' }
+};
+
 /* ============================================================
  *                      RIDE DEFINITIONS
  *
@@ -240,6 +267,19 @@
  * driven anyway and it's your knob to turn.
  * ============================================================ */
 
+/*
+ * Segments can carry a cadence target, a power target, or both. Which one
+ * gets the big number on screen is a rider preference set on the setup
+ * screen, so the two of you can share one ride definition.
+ *
+ * Power, in order of precedence:
+ *   zone: 4              a power zone, resolved against FTP. Easiest.
+ *   powerPct: [80, 90]   a custom percentage band of FTP
+ *   power: [160, 190]    absolute watts, ignores FTP entirely
+ *
+ * Zones and percentages both need an FTP set on the setup screen.
+ */
+
 const RIDES = [
   {
     name: 'Example ride, replace me',
@@ -249,27 +289,27 @@ const RIDES = [
         track: 'spotify:track:REPLACE_TRACK_ONE',
         label: 'Warmup',
         segments: [
-          { at: 0,  cadence: [80, 90],  resistance: [20, 28], cue: 'Easy spin. Find your position.' },
-          { at: 90, cadence: [85, 95],  resistance: [28, 34], cue: 'Pick it up a little.' }
+          { at: 0,  cadence: [80, 90], zone: 1, resistance: [20, 28], cue: 'Easy spin. Find your position.' },
+          { at: 90, cadence: [85, 95], zone: 2, resistance: [28, 34], cue: 'Pick it up a little.' }
         ]
       },
       {
         track: 'spotify:track:REPLACE_TRACK_TWO',
         label: 'Climb',
         segments: [
-          { at: 0,  cadence: [60, 70], resistance: [55, 65], cue: 'Out of the saddle. Heavy and slow.' },
-          { at: 60, cadence: [70, 80], resistance: [42, 50], cue: 'Sit down. Keep the legs moving.' },
-          { at: 120, cadence: [60, 70], resistance: [55, 65], cue: 'Back up. Same as before.' }
+          { at: 0,   cadence: [60, 70], zone: 4, resistance: [55, 65], cue: 'Out of the saddle. Heavy and slow.' },
+          { at: 60,  cadence: [70, 80], zone: 3, resistance: [42, 50], cue: 'Sit down. Keep the legs moving.' },
+          { at: 120, cadence: [60, 70], zone: 4, resistance: [55, 65], cue: 'Back up. Same as before.' }
         ]
       },
       {
         track: 'spotify:track:REPLACE_TRACK_THREE',
         label: 'Sprints',
         segments: [
-          { at: 0,  cadence: [95, 110], resistance: [35, 42], cue: 'Sprint. Twenty seconds.' },
-          { at: 20, cadence: [70, 80],  resistance: [30, 36], cue: 'Recover.' },
-          { at: 50, cadence: [95, 110], resistance: [35, 42], cue: 'Again. Twenty seconds.' },
-          { at: 70, cadence: [70, 80],  resistance: [30, 36], cue: 'Recover.' }
+          { at: 0,  cadence: [95, 110], zone: 6, resistance: [35, 42], cue: 'Sprint. Twenty seconds.' },
+          { at: 20, cadence: [70, 80],  zone: 2, resistance: [30, 36], cue: 'Recover.' },
+          { at: 50, cadence: [95, 110], zone: 6, resistance: [35, 42], cue: 'Again. Twenty seconds.' },
+          { at: 70, cadence: [70, 80],  zone: 2, resistance: [30, 36], cue: 'Recover.' }
         ]
       }
     ]
@@ -481,7 +521,7 @@ let tickTimer = null;
 let pollTimer = null;
 
 // Accumulated over the ride, sampled whenever new sensor data arrives.
-let acc = { samples: 0, cadSum: 0, pwrSum: 0, hrSum: 0, hrSamples: 0, inZone: 0, zoned: 0 };
+let acc = { samples: 0, cadSum: 0, pwrSum: 0, hrSum: 0, hrSamples: 0, inZone: 0, zoned: 0, zoneTime: {} };
 
 function accumulate() {
   if (!rideStartedAt) return;
@@ -491,10 +531,16 @@ function accumulate() {
   if (hr.bpm !== null) { acc.hrSum += hr.bpm; acc.hrSamples++; }
 
   const seg = activeSegment();
-  if (seg && seg.cadence && bike.cadence !== null) {
+  const range = focusRange(seg);
+  const actual = focusActual();
+  if (range && actual !== null) {
     acc.zoned++;
-    if (bike.cadence >= seg.cadence[0] && bike.cadence <= seg.cadence[1]) acc.inZone++;
+    if (actual >= range[0] && actual <= range[1]) acc.inZone++;
   }
+
+  // Where the effort actually landed, regardless of what was asked for.
+  const z = zoneOf(bike.power);
+  if (z) acc.zoneTime[z] = (acc.zoneTime[z] || 0) + 1;
 }
 
 function activeBlock() {
@@ -514,11 +560,49 @@ function activeSegment() {
   return found;
 }
 
-// Small deadband so the colour doesn't strobe when you sit right on the edge.
-function zoneFor(actual, range) {
+let focus = 'cadence';   // or 'power'
+let ftp = 0;
+
+// Zone, then custom percentage, then absolute watts.
+function powerRange(seg) {
+  if (!seg) return null;
+  if (seg.power) return seg.power;
+  const pct = seg.zone && ZONES[seg.zone] ? ZONES[seg.zone].pct : seg.powerPct;
+  if (pct && ftp > 0) {
+    return [Math.round(ftp * pct[0] / 100), Math.round(ftp * pct[1] / 100)];
+  }
+  return null;
+}
+
+function zoneLabel(seg) {
+  if (!seg || !seg.zone || !ZONES[seg.zone]) return null;
+  return 'Zone ' + seg.zone + ', ' + ZONES[seg.zone].name;
+}
+
+// Which zone does an actual wattage fall in? Used for time-in-zone.
+function zoneOf(watts) {
+  if (!ftp || watts === null) return null;
+  const pct = (watts / ftp) * 100;
+  for (let z = 7; z >= 1; z--) {
+    if (pct >= ZONES[z].pct[0]) return z;
+  }
+  return 1;
+}
+
+function focusRange(seg) {
+  return focus === 'power' ? powerRange(seg) : (seg && seg.cadence) || null;
+}
+
+function focusActual() {
+  if (focus === 'power') return bike.power === null ? null : Math.round(bike.power);
+  return bike.cadence === null ? null : Math.round(bike.cadence);
+}
+
+// Deadband scales with the metric: 1 rpm is tight, 1 watt is noise.
+function zoneFor(actual, range, slack) {
   if (actual === null || !range) return '';
-  if (actual < range[0] - 1) return 'under';
-  if (actual > range[1] + 1) return 'over';
+  if (actual < range[0] - slack) return 'under';
+  if (actual > range[1] + slack) return 'over';
   return 'in';
 }
 
@@ -539,19 +623,39 @@ function tick() {
     el('blockName').textContent = 'Off script';
     el('cueText').textContent = 'This track has no block defined. Spin how you like.';
   } else {
-    el('blockName').textContent = block.label;
+    const zl = zoneLabel(seg);
+    el('blockName').textContent = zl ? block.label + '  ·  ' + zl : block.label;
     el('cueText').textContent = seg ? seg.cue : 'Hold steady.';
   }
 
-  // Cadence, the main event
-  const cad = bike.cadence === null ? null : Math.round(bike.cadence);
-  const cadZone = zoneFor(cad, seg && seg.cadence);
-  el('cadActual').textContent = cad === null ? '--' : cad;
-  el('cadActual').dataset.zone = cadZone;
-  el('cadTarget').dataset.zone = cadZone;
-  el('cadGoal').textContent = seg && seg.cadence
-    ? 'cadence, target ' + seg.cadence[0] + ' to ' + seg.cadence[1] + ' rpm'
-    : 'cadence, rpm';
+  // The metric in focus takes the big panel and drives the colour
+  const primary = focusActual();
+  const range = focusRange(seg);
+  const slack = focus === 'power' ? 8 : 1;
+  const zone = zoneFor(primary, range, slack);
+
+  el('primaryActual').textContent = primary === null ? '--' : primary;
+  el('primaryActual').dataset.zone = zone;
+  el('primaryPanel').dataset.zone = zone;
+
+  const unit = focus === 'power' ? 'watts' : 'rpm';
+  const name = focus === 'power' ? 'power' : 'cadence';
+  el('primaryGoal').textContent = range
+    ? name + ', target ' + range[0] + ' to ' + range[1] + ' ' + unit
+    : name + ', ' + unit;
+
+  // The other one drops to a small tile, still with its target shown
+  if (focus === 'power') {
+    const cad = bike.cadence === null ? null : Math.round(bike.cadence);
+    el('secondaryActual').textContent = cad === null ? '--' : cad;
+    el('secondaryGoal').textContent = seg && seg.cadence
+      ? 'rpm, aim ' + seg.cadence[0] + ' to ' + seg.cadence[1]
+      : 'rpm';
+  } else {
+    const pw = powerRange(seg);
+    el('secondaryActual').textContent = bike.power === null ? '--' : bike.power;
+    el('secondaryGoal').textContent = pw ? 'watts, aim ' + pw[0] + ' to ' + pw[1] : 'watts';
+  }
 
   // Resistance is advisory, since nothing can turn the knob for you
   el('resActual').textContent = bike.resistance === null ? '--' : bike.resistance;
@@ -559,11 +663,9 @@ function tick() {
     ? 'resistance, aim ' + seg.resistance[0] + ' to ' + seg.resistance[1]
     : 'resistance';
 
-  el('pwrActual').textContent = bike.power === null ? '--' : bike.power;
   el('hrActual').textContent = hr.bpm === null ? '--' : hr.bpm;
   el('elapsed').textContent = fmtTime(performance.now() - rideStartedAt);
 
-  // Progress through the current track
   const pct = anchor.durationMs ? (currentPosition() / anchor.durationMs) * 100 : 0;
   el('progress').style.width = Math.min(100, pct) + '%';
 }
@@ -575,7 +677,7 @@ async function startRide() {
   document.body.dataset.view = 'ride';
   el('summaryPanel').style.display = 'none';
   rideStartedAt = performance.now();
-  acc = { samples: 0, cadSum: 0, pwrSum: 0, hrSum: 0, hrSamples: 0, inZone: 0, zoned: 0 };
+  acc = { samples: 0, cadSum: 0, pwrSum: 0, hrSum: 0, hrSamples: 0, inZone: 0, zoned: 0, zoneTime: {} };
 
   try {
     const lock = await navigator.wakeLock.request('screen');
@@ -612,10 +714,27 @@ function stopRide() {
     'Avg cadence: ' + (acc.samples ? (acc.cadSum / acc.samples).toFixed(0) : '--') + ' rpm',
     'Avg power:   ' + (acc.samples ? (acc.pwrSum / acc.samples).toFixed(0) : '--') + ' W',
     'Avg heart:   ' + (acc.hrSamples ? (acc.hrSum / acc.hrSamples).toFixed(0) : '--') + ' bpm',
-    'In target:   ' + (acc.zoned ? ((acc.inZone / acc.zoned) * 100).toFixed(0) + '%' : '--')
+    'In ' + focus + ':   ' + (acc.zoned ? ((acc.inZone / acc.zoned) * 100).toFixed(0) + '%' : '--')
   ];
 
   el('summary').textContent = lines.join('\n');
+
+  // Time in zone, as a share of samples. Only meaningful with an FTP set.
+  const totalZ = Object.values(acc.zoneTime).reduce((a, b) => a + b, 0);
+  if (ftp && totalZ) {
+    const zoneLines = ['', 'Time in zone'];
+    for (let z = 1; z <= 7; z++) {
+      const n = acc.zoneTime[z] || 0;
+      if (!n) continue;
+      const share = Math.round((n / totalZ) * 100);
+      zoneLines.push(
+        '  ' + z + '  ' + ZONES[z].name.padEnd(15) +
+        String(share).padStart(3) + '%  ' + '#'.repeat(Math.round(share / 4))
+      );
+    }
+    el('summary').textContent += '\n' + zoneLines.join('\n');
+  }
+
   el('summaryPanel').style.display = 'block';
   rideStartedAt = 0;
 }
@@ -652,6 +771,30 @@ RIDES.forEach((r, i) => {
 if (!navigator.bluetooth) {
   msg('No Web Bluetooth here. Open this in Bluefy, not Safari.', true);
 }
+
+function applyFocus(next) {
+  focus = next;
+  store('focus', next);
+  el('focusCadence').classList.toggle('ghost', next !== 'cadence');
+  el('focusPower').classList.toggle('ghost', next !== 'power');
+  if (next === 'power' && !ftp) {
+    msg('Power focus set. Without an FTP, only segments with absolute watts will show a target.');
+  }
+}
+
+focus = load('focus') || 'cadence';
+ftp = parseInt(load('ftp') || '0', 10);
+el('ftp').value = ftp || '';
+applyFocus(focus);
+
+el('ftp').addEventListener('change', () => {
+  ftp = parseInt(el('ftp').value, 10) || 0;
+  store('ftp', String(ftp));
+  msg(ftp ? 'FTP set to ' + ftp + ' W. Percentage targets now resolve.' : 'FTP cleared.');
+});
+
+el('focusCadence').addEventListener('click', () => applyFocus('cadence'));
+el('focusPower').addEventListener('click', () => applyFocus('power'));
 
 el('connectBike').addEventListener('click', connectBike);
 el('connectHr').addEventListener('click', connectHr);
