@@ -52,9 +52,27 @@
   .bpmRow .t small { display: block; color: var(--muted); }
   .bpmRow input { width: 74px; margin: 0; padding: 8px 9px; text-align: center; flex: none; }
   .bpmRow .derived { font-size: 12px; color: var(--muted); width: 62px; flex: none; text-align: right; }
+
+  .nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  .nav a {
+    font-size: 13px; text-decoration: none; color: var(--muted);
+    padding: 7px 11px; border-radius: 6px;
+    box-shadow: inset 0 0 0 1px var(--panel-edge);
+  }
+  .nav a[aria-current="page"] {
+    color: var(--ink); background: var(--signal);
+    box-shadow: none; font-weight: 500;
+  }
 </style>
 </head>
 <body>
+
+<nav class="nav">
+  <a href="ride.html">Ride</a>
+  <a href="build.html" aria-current="page">Build</a>
+  <a href="index.html">Sensors</a>
+  <a href="spotify.html">Spotify</a>
+</nav>
 
 <h1>Ride scaffold</h1>
 
@@ -70,7 +88,12 @@
 
 <div class="panel">
   <h2>Playlist</h2>
-  <input type="text" id="uri" placeholder="Paste playlist link or spotify:playlist:..." autocapitalize="off" autocorrect="off" spellcheck="false">
+  <p>Pick one of yours, or paste a link. Development mode can only read playlists you own.</p>
+  <div class="controls" style="margin-bottom:10px">
+    <button id="loadMine" class="ghost">Load my playlists</button>
+  </div>
+  <select id="mine" style="display:none"></select>
+  <input type="text" id="uri" placeholder="Or paste a playlist link" autocapitalize="off" autocorrect="off" spellcheck="false">
   <p>One segment per track, or split each track into fixed chunks.</p>
   <select id="split">
     <option value="0">One segment per track</option>
@@ -80,6 +103,8 @@
   <p>Intensity arc. Zones and cadence get filled in by where each segment falls in the ride, not by what the track sounds like.</p>
   <select id="profile">
     <option value="">Leave blank, I'll write them myself</option>
+    <option value="pz30">Power zone, 30 minutes</option>
+    <option value="pz45">Power zone, 45 minutes</option>
     <option value="endurance">Endurance, steady middle</option>
     <option value="pyramid">Pyramid, build and descend</option>
     <option value="intervals">Intervals, alternating hard and easy</option>
@@ -139,19 +164,19 @@ async function refreshToken() {
   return true;
 }
 
-async function call(path, retried) {
+async function call(path, retried, quiet) {
   const token = load('access_token');
   if (!token) { msg('No token. Sign in on spotify.html.', 'fault'); return null; }
 
   const res = await fetch(API + path, { headers: { Authorization: 'Bearer ' + token } });
 
   if (res.status === 401 && !retried) {
-    if (await refreshToken()) return call(path, true);
+    if (await refreshToken()) return call(path, true, quiet);
     msg('Token expired and refresh failed. Sign in again on spotify.html.', 'fault');
     return null;
   }
   if (!res.ok) {
-    msg('Spotify returned ' + res.status + ' for ' + path, 'fault');
+    if (!quiet) msg('Spotify returned ' + res.status + ' for ' + path, 'fault');
     return null;
   }
   return res.json();
@@ -179,7 +204,40 @@ function escape(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"
  * involved: the shape comes from how a workout should be built, not from
  * what the playlist happens to sound like.
  */
+/*
+ * Power zone rides are described in songs, not percentages: one track per
+ * zone call, changes landing on track boundaries. `opening` applies to the
+ * first tracks in order, `closing` to the last, and `middle` cycles
+ * through whatever is left, so the same profile fits an eight track
+ * playlist or a thirteen track one.
+ */
+const ZONE_CUES = {
+  1: 'Easy spin. Nothing to prove here.',
+  2: 'Comfortable. You could hold this all day.',
+  3: 'Tempo. Working, but in control.',
+  4: 'Threshold. Hard, and holdable if you commit.',
+  5: 'Above threshold. This one costs you.',
+  6: 'Anaerobic. Short and expensive.',
+  7: 'Everything. Not for long.'
+};
+
 const PROFILES = {
+  pz30: {
+    name: 'Power zone, 30 minutes',
+    byTrack: true,
+    targetMin: 30,
+    opening: [1, 2],
+    middle:  [3, 4, 3, 2, 4, 3],
+    closing: [1]
+  },
+  pz45: {
+    name: 'Power zone, 45 minutes',
+    byTrack: true,
+    targetMin: 45,
+    opening: [1, 2],
+    middle:  [2, 3, 4, 3, 2, 4, 4, 3, 2],
+    closing: [2, 1]
+  },
   endurance: {
     name: 'Endurance, steady middle',
     stages: [
@@ -254,6 +312,24 @@ function cadenceFromBpm(bpm) {
   else if (c < 55) c = c * 2;
   c = Math.round(c);
   return [c - 4, c + 4];
+}
+
+// For byTrack profiles: which zone does track `i` of `total` get?
+function zoneForTrack(profile, i, total) {
+  const open = profile.opening || [];
+  const close = profile.closing || [];
+  const mid = profile.middle || [3];
+
+  // Very short playlists: opening and closing can overlap, so trim.
+  const room = Math.max(0, total - close.length);
+
+  if (i < open.length && i < room) return open[i];
+  if (i >= room) {
+    const k = i - room;
+    return close[Math.min(k, close.length - 1)];
+  }
+  const k = i - open.length;
+  return mid[k % mid.length];
 }
 
 function targetsAt(fraction, altIndex) {
@@ -331,8 +407,10 @@ async function generate() {
 
   msg('Reading playlist.');
 
-  const meta = await call('/playlists/' + id + '?fields=name');
-  if (!meta) return;
+  // Cosmetic only, used for the ride name. Dev-mode restrictions on
+  // playlist metadata shouldn't stop the useful part from working.
+  let meta = await call('/playlists/' + id + '?fields=name', false, true);
+  if (!meta) meta = { name: 'Ride ' + id.slice(0, 6) };
 
   /*
    * The February 2026 dev-mode migration renamed this endpoint from
@@ -342,7 +420,12 @@ async function generate() {
    * the account is on an older behaviour.
    */
   const page = await call('/playlists/' + id + '/items?limit=100');
-  if (!page) return;
+  if (!page) {
+    msg('Could not read that playlist. Development mode lost access to other ' +
+        'users\' playlists in February 2026, so editorial playlists and ones ' +
+        'shared with you will fail. Use the picker above to choose one you own.', 'fault');
+    return;
+  }
 
   const entries = (page.items || [])
     .map(e => e.item || e.track)
@@ -358,6 +441,7 @@ async function generate() {
   const step = parseInt(el('split').value, 10);
   const lines = [];
   const bpms = bpmMap();
+  const profile = PROFILES[el('profile').value] || null;
 
   const totalMs = entries.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
   let elapsedMs = 0;   // cumulative position of the current track's start
@@ -376,12 +460,18 @@ async function generate() {
     // inside it have to come from the knob.
     const bpmCadence = bpm ? cadenceFromBpm(bpm) : null;
 
+    // A track-indexed profile gives one zone for the whole song.
+    const trackZone = (profile && profile.byTrack)
+      ? zoneForTrack(profile, i, entries.length)
+      : null;
+
     lines.push('      {');
     lines.push('        // ' + t.name + (artists ? '  —  ' + artists : '') +
                '   [' + mmss(t.duration_ms) + ']   at ' + mmss(elapsedMs) + ' into the ride' +
                (bpm ? '   ' + bpm + ' bpm' + (bpm > 110 ? ', ridden half time' : '') : '   no bpm set'));
     lines.push("        track: '" + t.uri + "',");
-    lines.push("        label: '" + escape(t.name.slice(0, 28)) + "',");
+    lines.push("        label: '" + escape(t.name.slice(0, 28)) +
+               (trackZone ? ' · Z' + trackZone : '') + "',");
     lines.push('        segments: [');
 
     const secs = Math.floor(t.duration_ms / 1000);
@@ -392,13 +482,19 @@ async function generate() {
     marks.forEach((at, k) => {
       const comma = k === marks.length - 1 ? '' : ',';
       const fraction = totalMs ? (elapsedMs + at * 1000) / totalMs : 0;
-      const tgt = targetsAt(fraction, altIndex);
-      altIndex++;
 
-      // BPM wins on cadence when we have it, since that's the whole point.
-      const cadence = bpmCadence || (tgt && tgt.cadence ? tgt.cadence : [80, 90]);
-      const zone = tgt && tgt.zone ? tgt.zone : 2;
-      const cue = tgt && tgt.cue ? escape(tgt.cue) : '';
+      let zone, cadence, cue;
+      if (trackZone) {
+        zone = trackZone;
+        cadence = bpmCadence || [80, 90];
+        cue = k === 0 ? escape(ZONE_CUES[trackZone] || '') : '';
+      } else {
+        const tgt = targetsAt(fraction, altIndex);
+        zone = tgt && tgt.zone ? tgt.zone : 2;
+        cadence = bpmCadence || (tgt && tgt.cadence ? tgt.cadence : [80, 90]);
+        cue = tgt && tgt.cue ? escape(tgt.cue) : '';
+      }
+      altIndex++;
 
       lines.push('          { at: ' + String(at).padStart(3) +
                  ', cadence: [' + cadence[0] + ', ' + cadence[1] + ']' +
@@ -421,7 +517,19 @@ async function generate() {
   const more = page.total && page.total > entries.length
     ? '  Note: playlist has ' + page.total + ' tracks, only the first 100 were read.'
     : '';
-  msg('Generated ' + entries.length + ' blocks for "' + (meta.name || 'playlist') + '".' + more, 'ok');
+
+  let fit = '';
+  if (profile && profile.targetMin) {
+    const actualMin = totalMs / 60000;
+    const diff = actualMin - profile.targetMin;
+    fit = '  Playlist runs ' + mmss(totalMs) + ' against a ' + profile.targetMin +
+          ' minute target, ' +
+          (Math.abs(diff) < 2.5 ? 'which is a good fit.'
+            : diff > 0 ? 'so it is ' + Math.round(diff) + ' minutes long. Drop a track or two from the middle.'
+            : 'so it is ' + Math.round(-diff) + ' minutes short. Add a track or two to the middle.');
+  }
+
+  msg('Generated ' + entries.length + ' blocks for "' + (meta.name || 'playlist') + '".' + fit + more, 'ok');
 }
 
 async function copyOut() {
@@ -439,6 +547,42 @@ if (savedUri) el('uri').value = savedUri;
 
 if (load('access_token') || load('refresh_token')) msg('Ready. Paste a playlist link.');
 
+async function loadMine() {
+  msg('Loading your playlists.');
+  const page = await call('/me/playlists?limit=50');
+  if (!page || !page.items) { msg('Could not list your playlists.', 'fault'); return; }
+
+  const me = await call('/me', false, true);
+  const myId = me && me.id;
+
+  // Only ones you own are readable in development mode.
+  const owned = page.items.filter(p => p && p.id && (!myId || (p.owner && p.owner.id === myId)));
+
+  const sel = el('mine');
+  sel.textContent = '';
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = owned.length + ' playlists you own';
+  sel.appendChild(blank);
+
+  owned.forEach(p => {
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.name + '  (' + ((p.tracks && p.tracks.total) || 0) + ')';
+    sel.appendChild(o);
+  });
+
+  sel.style.display = 'block';
+  sel.addEventListener('change', () => {
+    if (sel.value) el('uri').value = 'spotify:playlist:' + sel.value;
+  });
+
+  msg(owned.length ? 'Pick one, then hit generate.' : 'No owned playlists found.', owned.length ? 'ok' : 'fault');
+}
+
+async function loadMineSafe() { try { await loadMine(); } catch (e) { msg('Failed: ' + e.message, 'fault'); } }
+
+el('loadMine').addEventListener('click', loadMineSafe);
 el('go').addEventListener('click', generate);
 el('regen').addEventListener('click', () => {
   if (!lastEntries.length) { msg('Generate once first.', 'fault'); return; }
