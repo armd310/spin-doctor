@@ -417,7 +417,12 @@ function markHeard() {
 
 el('redirectUri').textContent = REDIRECT_URI;
 
-const saved = load('client_id');
+// Prefilled, but anything you type overrides it and persists locally.
+// Client IDs are not secrets under PKCE: the flow is designed so a public
+// client needs no secret, which is why this can sit in a public repo.
+const DEFAULT_CLIENT_ID = '4ebd31b36bd647e580e09ad2aaafa61a';
+
+const saved = load('client_id') || DEFAULT_CLIENT_ID;
 if (saved) el('clientId').value = saved;
 
 const params = new URLSearchParams(location.search);
