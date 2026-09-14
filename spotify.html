@@ -108,6 +108,7 @@
 
 <div class="controls">
   <button id="refresh" class="ghost">Read state</button>
+  <button id="testMe" class="ghost">Test /me</button>
   <button id="playpause" class="ghost">Play / pause</button>
   <button id="next" class="ghost">Next</button>
   <button id="devices" class="ghost">List devices</button>
@@ -370,6 +371,21 @@ async function nextTrack() {
   setTimeout(readState, 600);
 }
 
+async function testProfile() {
+  log('--- testing /me, the simplest possible authenticated call ---');
+  const me = await call('/me');
+  if (me) {
+    log('/me OK: ' + (me.display_name || '(no name)') + ', product=' + (me.product || 'unknown'));
+    setStatus('Account access works. Product tier: ' + (me.product || 'unknown') + '.');
+    if (me.product !== 'premium') {
+      setStatus('Signed in, but this account is "' + me.product +
+                '", not premium. Player endpoints need Premium.', true);
+    }
+  } else {
+    log('/me also failed, so this is account-level, not playback-related');
+  }
+}
+
 async function listDevices() {
   const data = await call('/me/player/devices');
   if (!data) return;
@@ -454,6 +470,7 @@ if (params.has('error')) {
 
 el('auth').addEventListener('click', beginAuth);
 el('refresh').addEventListener('click', readState);
+el('testMe').addEventListener('click', testProfile);
 el('playpause').addEventListener('click', togglePlay);
 el('next').addEventListener('click', nextTrack);
 el('devices').addEventListener('click', listDevices);
