@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ride scaffold</title>
+<style>
+  :root {
+    --ink: #14202a; --panel: #1d2c38; --panel-edge: #2b3f4f;
+    --bright: #eef4f7; --muted: #8199a9; --signal: #f0a537;
+    --fault: #e0604f; --live: #5fc9a6;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; background: var(--ink); color: var(--bright);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  body { padding: 16px 14px 44px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0 0 18px; }
+  .panel { background: var(--panel); border-radius: 12px; padding: 15px 17px; margin-bottom: 12px; }
+  .panel h2 { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
+  .panel p { font-size: 13px; color: var(--muted); margin: 0 0 10px; line-height: 1.5; }
+  input, select {
+    font: inherit; font-size: 15px; width: 100%;
+    color: var(--bright); background: var(--ink); border: 0;
+    box-shadow: inset 0 0 0 1px var(--panel-edge);
+    border-radius: 7px; padding: 12px 13px; margin-bottom: 10px;
+  }
+  button {
+    font: inherit; font-size: 15px; font-weight: 500;
+    color: var(--ink); background: var(--signal); border: 0;
+    border-radius: 7px; padding: 11px 16px; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--bright); box-shadow: inset 0 0 0 1px var(--panel-edge); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  #msg { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 0 0 14px; min-height: 19px; }
+  #msg.fault { color: var(--fault); }
+  #msg.ok { color: var(--live); }
+  pre {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px; line-height: 1.6;
+    color: var(--bright); background: var(--ink);
+    border-radius: 7px; padding: 12px; margin: 0;
+    overflow-x: auto; white-space: pre;
+  }
+  ol { margin: 0; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.75; }
+  ol strong { color: var(--bright); font-weight: 500; }
+</style>
+</head>
+<body>
+
+<h1>Ride scaffold</h1>
+
+<div class="panel">
+  <h2>How to add a playlist</h2>
+  <ol>
+    <li>Build the playlist in Spotify and turn <strong>Mix</strong> on.</li>
+    <li>Share it and copy the link, then paste it below.</li>
+    <li>Hit generate, copy the block, and paste it into the <strong>RIDES</strong> array in ride.html.</li>
+    <li>Fill in cadence, zone and cue for each segment. Track durations are in the comments so you can pick your offsets.</li>
+  </ol>
+</div>
+
+<div class="panel">
+  <h2>Playlist</h2>
+  <input type="text" id="uri" placeholder="Paste playlist link or spotify:playlist:..." autocapitalize="off" autocorrect="off" spellcheck="false">
+  <p>One segment per track, or split each track into fixed chunks.</p>
+  <select id="split">
+    <option value="0">One segment per track</option>
+    <option value="30">A segment every 30 seconds</option>
+    <option value="60">A segment every 60 seconds</option>
+  </select>
+</div>
+
+<div class="controls">
+  <button id="go">Generate</button>
+  <button id="copy" class="ghost">Copy</button>
+</div>
+
+<p id="msg">Sign in on spotify.html first if this says the token is missing.</p>
+
+<pre id="out">Nothing generated yet.</pre>
+
+<script>
+'use strict';
+
+const API = 'https://api.spotify.com/v1';
+const TOKEN_URL = 'https://accounts.spotify.com/api/token';
+const el = id => document.getElementById(id);
+
+function msg(text, cls) {
+  const m = el('msg');
+  m.textContent = text;
+  m.className = cls || '';
+}
+
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+async function refreshToken() {
+  const rt = load('refresh_token');
+  if (!rt) return false;
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: load('client_id'), grant_type: 'refresh_token', refresh_token: rt
+    })
+  });
+  if (!res.ok) return false;
+  const d = await res.json();
+  store('access_token', d.access_token);
+  if (d.refresh_token) store('refresh_token', d.refresh_token);
+  store('expires_at', String(Date.now() + d.expires_in * 1000));
+  return true;
+}
+
+async function call(path, retried) {
+  const token = load('access_token');
+  if (!token) { msg('No token. Sign in on spotify.html.', 'fault'); return null; }
+
+  const res = await fetch(API + path, { headers: { Authorization: 'Bearer ' + token } });
+
+  if (res.status === 401 && !retried) {
+    if (await refreshToken()) return call(path, true);
+    msg('Token expired and refresh failed. Sign in again on spotify.html.', 'fault');
+    return null;
+  }
+  if (!res.ok) {
+    msg('Spotify returned ' + res.status + ' for ' + path, 'fault');
+    return null;
+  }
+  return res.json();
+}
+
+// Accepts a share link, a spotify: URI, or a bare id.
+function playlistId(input) {
+  const s = input.trim();
+  let m = s.match(/playlist[:/]([A-Za-z0-9]+)/);
+  if (m) return m[1];
+  if (/^[A-Za-z0-9]{22}$/.test(s)) return s;
+  return null;
+}
+
+function mmss(ms) {
+  const t = Math.round(ms / 1000);
+  return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+}
+
+function escape(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+
+async function generate() {
+  const id = playlistId(el('uri').value);
+  if (!id) { msg('That does not look like a playlist link.', 'fault'); return; }
+  store('scaffold_uri', el('uri').value.trim());
+
+  msg('Reading playlist.');
+
+  const meta = await call('/playlists/' + id + '?fields=name');
+  if (!meta) return;
+
+  /*
+   * The February 2026 dev-mode migration renamed this endpoint from
+   * /tracks to /items, and renamed each entry's `track` field to `item`.
+   * The old path returns 403, not 404, so it looks like a permissions
+   * problem when it isn't. Both entry shapes are handled below in case
+   * the account is on an older behaviour.
+   */
+  const page = await call('/playlists/' + id + '/items?limit=100');
+  if (!page) return;
+
+  const entries = (page.items || [])
+    .map(e => e.item || e.track)
+    .filter(t => t && t.uri && t.uri.startsWith('spotify:track:'));
+
+  if (!entries.length) { msg('No playable tracks found in that playlist.', 'fault'); return; }
+
+  const step = parseInt(el('split').value, 10);
+  const lines = [];
+
+  lines.push('  {');
+  lines.push("    name: '" + escape(meta.name || 'Untitled ride') + "',");
+  lines.push("    playlist: 'spotify:playlist:" + id + "',");
+  lines.push('    blocks: [');
+
+  entries.forEach((t, i) => {
+    const artists = t.artists ? t.artists.map(a => a.name).join(', ') : '';
+    lines.push('      {');
+    lines.push('        // ' + t.name + (artists ? '  —  ' + artists : '') +
+               '   [' + mmss(t.duration_ms) + ']');
+    lines.push("        track: '" + t.uri + "',");
+    lines.push("        label: '" + escape(t.name.slice(0, 28)) + "',");
+    lines.push('        segments: [');
+
+    const secs = Math.floor(t.duration_ms / 1000);
+    const marks = step > 0
+      ? Array.from({ length: Math.max(1, Math.ceil(secs / step)) }, (_, k) => k * step)
+      : [0];
+
+    marks.forEach((at, k) => {
+      const comma = k === marks.length - 1 ? '' : ',';
+      lines.push('          { at: ' + String(at).padStart(3) +
+                 ', cadence: [80, 90], zone: 2, resistance: [30, 40], ' +
+                 "cue: '' }" + comma);
+    });
+
+    lines.push('        ]');
+    lines.push('      }' + (i === entries.length - 1 ? '' : ','));
+  });
+
+  lines.push('    ]');
+  lines.push('  }');
+
+  el('out').textContent = lines.join('\n');
+
+  const more = page.total && page.total > entries.length
+    ? '  Note: playlist has ' + page.total + ' tracks, only the first 100 were read.'
+    : '';
+  msg('Generated ' + entries.length + ' blocks for "' + (meta.name || 'playlist') + '".' + more, 'ok');
+}
+
+async function copyOut() {
+  const text = el('out').textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    msg('Copied. Paste it inside the RIDES array in ride.html.', 'ok');
+  } catch (e) {
+    msg('Clipboard refused. Select the text manually and copy.', 'fault');
+  }
+}
+
+const savedUri = load('scaffold_uri');
+if (savedUri) el('uri').value = savedUri;
+
+if (load('access_token') || load('refresh_token')) msg('Ready. Paste a playlist link.');
+
+el('go').addEventListener('click', generate);
+el('copy').addEventListener('click', copyOut);
+</script>
+
+</body>
+</html>
