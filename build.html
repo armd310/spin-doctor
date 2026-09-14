@@ -46,6 +46,12 @@
   }
   ol { margin: 0; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.75; }
   ol strong { color: var(--bright); font-weight: 500; }
+
+  .bpmRow { display: flex; align-items: center; gap: 10px; margin-bottom: 7px; }
+  .bpmRow .t { flex: 1; font-size: 13px; line-height: 1.35; overflow: hidden; }
+  .bpmRow .t small { display: block; color: var(--muted); }
+  .bpmRow input { width: 74px; margin: 0; padding: 8px 9px; text-align: center; flex: none; }
+  .bpmRow .derived { font-size: 12px; color: var(--muted); width: 62px; flex: none; text-align: right; }
 </style>
 </head>
 <body>
@@ -71,11 +77,28 @@
     <option value="30">A segment every 30 seconds</option>
     <option value="60">A segment every 60 seconds</option>
   </select>
+  <p>Intensity arc. Zones and cadence get filled in by where each segment falls in the ride, not by what the track sounds like.</p>
+  <select id="profile">
+    <option value="">Leave blank, I'll write them myself</option>
+    <option value="endurance">Endurance, steady middle</option>
+    <option value="pyramid">Pyramid, build and descend</option>
+    <option value="intervals">Intervals, alternating hard and easy</option>
+    <option value="climb">Climb, sustained with surges</option>
+  </select>
 </div>
 
 <div class="controls">
   <button id="go">Generate</button>
   <button id="copy" class="ghost">Copy</button>
+</div>
+
+<div class="panel" id="bpmPanel" style="display:none">
+  <h2>Tempo</h2>
+  <p>Turn Mix on for this playlist in Spotify and it shows BPM per track. Type them here and cadence targets get derived from them. Saved by track, so you only ever do a song once.</p>
+  <div id="bpmRows"></div>
+  <div class="controls" style="margin-bottom:0">
+    <button id="regen">Regenerate with tempo</button>
+  </div>
 </div>
 
 <p id="msg">Sign in on spotify.html first if this says the token is missing.</p>
@@ -150,6 +173,157 @@ function mmss(ms) {
 
 function escape(s) { return String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
 
+/*
+ * A ride profile is the intensity arc, expressed as fractions of total
+ * ride duration. Each stage applies until `to`. No music analysis
+ * involved: the shape comes from how a workout should be built, not from
+ * what the playlist happens to sound like.
+ */
+const PROFILES = {
+  endurance: {
+    name: 'Endurance, steady middle',
+    stages: [
+      { to: 0.12, zone: 1, cadence: [80, 90],  cue: 'Easy spin. Settle in.' },
+      { to: 0.20, zone: 2, cadence: [85, 95],  cue: 'Build gently.' },
+      { to: 0.85, zone: 3, cadence: [80, 90],  cue: 'Hold tempo. This is the ride.' },
+      { to: 1.00, zone: 1, cadence: [75, 85],  cue: 'Spin it out.' }
+    ]
+  },
+  pyramid: {
+    name: 'Pyramid, build and descend',
+    stages: [
+      { to: 0.12, zone: 1, cadence: [80, 90],  cue: 'Warm up.' },
+      { to: 0.28, zone: 2, cadence: [85, 95],  cue: 'Start building.' },
+      { to: 0.42, zone: 3, cadence: [80, 90],  cue: 'Tempo. Settle into the work.' },
+      { to: 0.58, zone: 4, cadence: [70, 80],  cue: 'Threshold. Hard but holdable.' },
+      { to: 0.68, zone: 5, cadence: [75, 85],  cue: 'Peak. Everything you have.' },
+      { to: 0.80, zone: 3, cadence: [80, 90],  cue: 'Come down. Keep it turning.' },
+      { to: 0.90, zone: 2, cadence: [85, 95],  cue: 'Easier now.' },
+      { to: 1.00, zone: 1, cadence: [75, 85],  cue: 'Cool down.' }
+    ]
+  },
+  intervals: {
+    name: 'Intervals, alternating hard and easy',
+    stages: [
+      { to: 0.15, zone: 1, cadence: [80, 90],   cue: 'Warm up.' },
+      { to: 0.85, zone: null, cadence: null,    cue: null, alternate: [
+        { zone: 5, cadence: [95, 110], cue: 'Go. Hold it.' },
+        { zone: 2, cadence: [75, 85],  cue: 'Recover.' }
+      ] },
+      { to: 1.00, zone: 1, cadence: [75, 85],   cue: 'Cool down.' }
+    ]
+  },
+  climb: {
+    name: 'Climb, sustained with surges',
+    stages: [
+      { to: 0.15, zone: 1, cadence: [80, 90], cue: 'Warm up.' },
+      { to: 0.85, zone: null, cadence: null,  cue: null, alternate: [
+        { zone: 4, cadence: [60, 70], cue: 'Out of the saddle. Heavy.' },
+        { zone: 3, cadence: [75, 85], cue: 'Sit down. Keep the legs moving.' }
+      ] },
+      { to: 1.00, zone: 1, cadence: [75, 85], cue: 'Spin it out.' }
+    ]
+  }
+};
+
+// Which stage covers a point this far through the ride, and with what
+// targets. `alternate` stages flip between entries on each segment.
+/*
+ * BPM library, keyed by track URI. A track's tempo never changes, so once
+ * you've read it off the Mix view it's worth keeping: reuse a song in
+ * another ride and the cadence is already there.
+ */
+function bpmMap() {
+  try { return JSON.parse(load('bpm_map') || '{}'); } catch (e) { return {}; }
+}
+function saveBpm(uri, bpm) {
+  const m = bpmMap();
+  if (bpm) m[uri] = bpm; else delete m[uri];
+  store('bpm_map', JSON.stringify(m));
+}
+
+/*
+ * Cadence from tempo. Anything above about 110 is ridden at half time,
+ * since nobody holds 140 rpm. Below 55 gets doubled for the opposite
+ * reason. The window either side gives a range to aim at rather than a
+ * single number you can never sit exactly on.
+ */
+function cadenceFromBpm(bpm) {
+  let c = bpm;
+  if (c > 110) c = c / 2;
+  else if (c < 55) c = c * 2;
+  c = Math.round(c);
+  return [c - 4, c + 4];
+}
+
+function targetsAt(fraction, altIndex) {
+  const key = el('profile').value;
+  if (!key || !PROFILES[key]) return null;
+
+  for (const stage of PROFILES[key].stages) {
+    if (fraction <= stage.to) {
+      if (stage.alternate) {
+        return stage.alternate[altIndex % stage.alternate.length];
+      }
+      return stage;
+    }
+  }
+  return null;
+}
+
+let lastEntries = [];
+let lastMeta = null;
+let lastId = null;
+
+function renderBpmRows() {
+  const bpms = bpmMap();
+  const wrap = el('bpmRows');
+  wrap.textContent = '';
+
+  lastEntries.forEach(t => {
+    const row = document.createElement('div');
+    row.className = 'bpmRow';
+
+    const label = document.createElement('div');
+    label.className = 't';
+    const artists = t.artists ? t.artists.map(a => a.name).join(', ') : '';
+    label.textContent = t.name;
+    const sub = document.createElement('small');
+    sub.textContent = artists;
+    label.appendChild(sub);
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.min = '40';
+    input.max = '220';
+    input.placeholder = 'bpm';
+    input.value = bpms[t.uri] || '';
+
+    const derived = document.createElement('div');
+    derived.className = 'derived';
+
+    function showDerived() {
+      const v = parseInt(input.value, 10);
+      if (!v) { derived.textContent = ''; return; }
+      const r = cadenceFromBpm(v);
+      derived.textContent = r[0] + '-' + r[1] + ' rpm';
+    }
+
+    input.addEventListener('input', () => {
+      saveBpm(t.uri, parseInt(input.value, 10) || null);
+      showDerived();
+    });
+
+    showDerived();
+    row.appendChild(label);
+    row.appendChild(input);
+    row.appendChild(derived);
+    wrap.appendChild(row);
+  });
+
+  el('bpmPanel').style.display = lastEntries.length ? 'block' : 'none';
+}
+
 async function generate() {
   const id = playlistId(el('uri').value);
   if (!id) { msg('That does not look like a playlist link.', 'fault'); return; }
@@ -176,8 +350,18 @@ async function generate() {
 
   if (!entries.length) { msg('No playable tracks found in that playlist.', 'fault'); return; }
 
+  lastEntries = entries;
+  lastMeta = meta;
+  lastId = id;
+  renderBpmRows();
+
   const step = parseInt(el('split').value, 10);
   const lines = [];
+  const bpms = bpmMap();
+
+  const totalMs = entries.reduce((sum, t) => sum + (t.duration_ms || 0), 0);
+  let elapsedMs = 0;   // cumulative position of the current track's start
+  let altIndex = 0;    // advances per segment, for alternating stages
 
   lines.push('  {');
   lines.push("    name: '" + escape(meta.name || 'Untitled ride') + "',");
@@ -186,9 +370,16 @@ async function generate() {
 
   entries.forEach((t, i) => {
     const artists = t.artists ? t.artists.map(a => a.name).join(', ') : '';
+    const bpm = bpms[t.uri] || null;
+
+    // Tempo fixes cadence for the whole track, so intensity changes
+    // inside it have to come from the knob.
+    const bpmCadence = bpm ? cadenceFromBpm(bpm) : null;
+
     lines.push('      {');
     lines.push('        // ' + t.name + (artists ? '  —  ' + artists : '') +
-               '   [' + mmss(t.duration_ms) + ']');
+               '   [' + mmss(t.duration_ms) + ']   at ' + mmss(elapsedMs) + ' into the ride' +
+               (bpm ? '   ' + bpm + ' bpm' + (bpm > 110 ? ', ridden half time' : '') : '   no bpm set'));
     lines.push("        track: '" + t.uri + "',");
     lines.push("        label: '" + escape(t.name.slice(0, 28)) + "',");
     lines.push('        segments: [');
@@ -200,13 +391,26 @@ async function generate() {
 
     marks.forEach((at, k) => {
       const comma = k === marks.length - 1 ? '' : ',';
+      const fraction = totalMs ? (elapsedMs + at * 1000) / totalMs : 0;
+      const tgt = targetsAt(fraction, altIndex);
+      altIndex++;
+
+      // BPM wins on cadence when we have it, since that's the whole point.
+      const cadence = bpmCadence || (tgt && tgt.cadence ? tgt.cadence : [80, 90]);
+      const zone = tgt && tgt.zone ? tgt.zone : 2;
+      const cue = tgt && tgt.cue ? escape(tgt.cue) : '';
+
       lines.push('          { at: ' + String(at).padStart(3) +
-                 ', cadence: [80, 90], zone: 2, resistance: [30, 40], ' +
-                 "cue: '' }" + comma);
+                 ', cadence: [' + cadence[0] + ', ' + cadence[1] + ']' +
+                 ', zone: ' + zone +
+                 ', resistance: [30, 40]' +
+                 ", cue: '" + cue + "' }" + comma);
     });
 
     lines.push('        ]');
     lines.push('      }' + (i === entries.length - 1 ? '' : ','));
+
+    elapsedMs += t.duration_ms || 0;
   });
 
   lines.push('    ]');
@@ -236,6 +440,10 @@ if (savedUri) el('uri').value = savedUri;
 if (load('access_token') || load('refresh_token')) msg('Ready. Paste a playlist link.');
 
 el('go').addEventListener('click', generate);
+el('regen').addEventListener('click', () => {
+  if (!lastEntries.length) { msg('Generate once first.', 'fault'); return; }
+  generate();
+});
 el('copy').addEventListener('click', copyOut);
 </script>
 

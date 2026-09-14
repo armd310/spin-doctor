@@ -82,6 +82,14 @@
   }
   .cue .block { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 
+  .lookahead {
+    font-size: 14px; font-weight: 500; color: var(--signal);
+    line-height: 1.4; overflow: hidden;
+    max-height: 0; opacity: 0;
+    transition: max-height 160ms ease, opacity 160ms ease, margin-bottom 160ms ease;
+  }
+  .lookahead[data-on="yes"] { max-height: 60px; opacity: 1; margin-bottom: 10px; }
+
   .target {
     background: var(--panel); border-radius: 12px;
     padding: 16px 18px 14px; margin-bottom: 10px;
@@ -188,6 +196,8 @@
     <div class="block" id="blockName">--</div>
     <div id="cueText">Waiting for playback</div>
   </div>
+
+  <div class="lookahead" id="lookahead" data-on="no"></div>
 
   <div class="target" id="primaryPanel" data-zone="">
     <div class="actual" id="primaryActual" data-zone="">--</div>
@@ -611,6 +621,17 @@ function fmtTime(ms) {
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 
+// The next segment in this track, if there is one, plus how long until it.
+function nextSegment() {
+  const block = activeBlock();
+  if (!block) return null;
+  const seconds = currentPosition() / 1000;
+  for (const seg of block.segments) {
+    if (seg.at > seconds) return { seg: seg, inSec: Math.round(seg.at - seconds) };
+  }
+  return null;
+}
+
 function tick() {
   const block = activeBlock();
   const seg = activeSegment();
@@ -657,11 +678,35 @@ function tick() {
     el('secondaryGoal').textContent = pw ? 'watts, aim ' + pw[0] + ' to ' + pw[1] : 'watts';
   }
 
-  // Resistance is advisory, since nothing can turn the knob for you
+  // Resistance is the lever once cadence is fixed by the music, so it
+  // gets a delta rather than just a number to read off.
+  const resRange = seg && seg.resistance;
   el('resActual').textContent = bike.resistance === null ? '--' : bike.resistance;
-  el('resGoal').textContent = seg && seg.resistance
-    ? 'resistance, aim ' + seg.resistance[0] + ' to ' + seg.resistance[1]
-    : 'resistance';
+  if (resRange && bike.resistance !== null) {
+    if (bike.resistance < resRange[0]) {
+      el('resGoal').textContent = 'resistance, add ' + (resRange[0] - bike.resistance);
+    } else if (bike.resistance > resRange[1]) {
+      el('resGoal').textContent = 'resistance, drop ' + (bike.resistance - resRange[1]);
+    } else {
+      el('resGoal').textContent = 'resistance, holding ' + resRange[0] + ' to ' + resRange[1];
+    }
+  } else {
+    el('resGoal').textContent = resRange
+      ? 'resistance, aim ' + resRange[0] + ' to ' + resRange[1]
+      : 'resistance';
+  }
+
+  // Heads-up on what's coming, inside the next fifteen seconds.
+  const nxt = nextSegment();
+  if (nxt && nxt.inSec <= 15) {
+    const zl = zoneLabel(nxt.seg);
+    el('lookahead').textContent = 'In ' + nxt.inSec + 's: ' +
+      (zl || 'next segment') + (nxt.seg.cue ? '  ·  ' + nxt.seg.cue : '');
+    el('lookahead').dataset.on = 'yes';
+  } else {
+    el('lookahead').textContent = '';
+    el('lookahead').dataset.on = 'no';
+  }
 
   el('hrActual').textContent = hr.bpm === null ? '--' : hr.bpm;
   el('elapsed').textContent = fmtTime(performance.now() - rideStartedAt);
