@@ -117,6 +117,10 @@
 <div class="panel">
   <h2>Transition timing test</h2>
   <p>Polls once a second and logs each track change with its reported position. When you hear a transition begin, tap the button. The gap between what you heard and what the API reported is the offset your ride cues would inherit.</p>
+  <input type="text" id="contextUri" placeholder="spotify:playlist:... (right-click a playlist, Copy Spotify URI)" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <div class="controls">
+    <button id="startContext" class="ghost">Start this playlist via API</button>
+  </div>
   <div class="controls">
     <button id="startPoll">Start polling</button>
     <button id="mark" class="ghost">I hear the transition</button>
@@ -371,6 +375,33 @@ async function nextTrack() {
   setTimeout(readState, 600);
 }
 
+/*
+ * Start a playlist by context URI. This is the case that matters: if Mix
+ * transitions survive playback that an API call began, the ride engine can
+ * own playback. If they don't, the rider has to press play themselves.
+ */
+async function startContext() {
+  const uri = el('contextUri').value.trim();
+  if (!uri.startsWith('spotify:playlist:')) {
+    setStatus('Needs a playlist URI, like spotify:playlist:37i9dQ...', true);
+    return;
+  }
+  store('context_uri', uri);
+
+  log('starting ' + uri + ' via /me/player/play');
+  const res = await call('/me/player/play', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context_uri: uri })
+  });
+
+  if (res) {
+    appendTiming('playback started by API, not by hand');
+    setStatus('Started via API. Let two tracks play out and listen for the blend.');
+    setTimeout(readState, 800);
+  }
+}
+
 async function testProfile() {
   log('--- testing /me, the simplest possible authenticated call ---');
   const me = await call('/me');
@@ -475,6 +506,10 @@ el('playpause').addEventListener('click', togglePlay);
 el('next').addEventListener('click', nextTrack);
 el('devices').addEventListener('click', listDevices);
 el('startPoll').addEventListener('click', togglePoll);
+el('startContext').addEventListener('click', startContext);
+
+const savedUri = load('context_uri');
+if (savedUri) el('contextUri').value = savedUri;
 el('mark').addEventListener('click', markHeard);
 </script>
 
