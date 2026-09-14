@@ -164,6 +164,7 @@
 
 <div class="controls">
   <button id="connect">Connect to bike</button>
+  <button id="connectHr" class="ghost">Connect heart rate</button>
   <button id="connectAny" class="ghost">Pick any device</button>
   <button id="wake" class="ghost">Keep screen on</button>
 </div>
@@ -183,6 +184,16 @@
     <div class="primary">
       <div class="value" id="v-speed" data-stale="yes">--</div>
       <div class="unit">Speed, km/h</div>
+    </div>
+  </div>
+  <div class="pair">
+    <div class="primary">
+      <div class="value" id="v-hr" data-stale="yes">--</div>
+      <div class="unit">Heart rate, bpm</div>
+    </div>
+    <div class="primary">
+      <div class="value" id="v-rr" data-stale="yes">--</div>
+      <div class="unit">Last R-R interval, ms</div>
     </div>
   </div>
   <div class="pair">
@@ -229,6 +240,11 @@
 // expands it for you; Bluefy's shim may not, so we do the expansion here.
 const FTMS_SERVICE = '00001826-0000-1000-8000-00805f9b34fb';
 const INDOOR_BIKE_DATA = '00002ad2-0000-1000-8000-00805f9b34fb';
+
+// Standard Heart Rate Service. Any strap, armband or watch that speaks the
+// Bluetooth Heart Rate Profile exposes exactly these two.
+const HR_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb';
+const HR_MEASUREMENT = '00002a37-0000-1000-8000-00805f9b34fb';
 
 // Flag bit -> human name, for the raw dump.
 const FLAG_NAMES = [
@@ -504,6 +520,98 @@ async function connect(pickAny) {
   }
 }
 
+/*
+ * Parse a Heart Rate Measurement packet.
+ *
+ * Byte 0 is flags. Bit 0 decides whether the rate itself is 8-bit or
+ * 16-bit, which is the only part people usually get wrong. Bit 4 says
+ * whether R-R intervals follow, and those are in 1/1024 second units,
+ * not milliseconds.
+ */
+function parseHeartRate(dv) {
+  const flags = dv.getUint8(0);
+  let i = 1;
+  const out = { flags };
+
+  if (flags & 0x01) { out.bpm = dv.getUint16(i, true); i += 2; }
+  else              { out.bpm = dv.getUint8(i);        i += 1; }
+
+  const contact = (flags >> 1) & 0x03;
+  out.contact = ['not supported', 'not supported', 'no skin contact', 'contact ok'][contact];
+
+  if (flags & 0x08) { out.energy = dv.getUint16(i, true); i += 2; }
+
+  if (flags & 0x10) {
+    out.rr = [];
+    while (i + 1 < dv.byteLength) {
+      out.rr.push(Math.round(dv.getUint16(i, true) * 1000 / 1024));
+      i += 2;
+    }
+  }
+
+  out.consumed = i;
+  return out;
+}
+
+function onHeartRate(event) {
+  const hr = parseHeartRate(event.target.value);
+  show('v-hr', hr.bpm);
+
+  if (hr.rr && hr.rr.length) {
+    show('v-rr', hr.rr[hr.rr.length - 1]);
+    log('hr ' + hr.bpm + ' bpm, rr ' + hr.rr.join(',') + ' ms, ' + hr.contact);
+  } else {
+    log('hr ' + hr.bpm + ' bpm, no rr intervals, ' + hr.contact);
+  }
+}
+
+async function connectHeartRate() {
+  log('--- connect heart rate ---');
+
+  if (!navigator.bluetooth) {
+    setStatus('No Web Bluetooth in this browser.', true);
+    return;
+  }
+
+  let stage = 'requestDevice';
+  try {
+    setStatus('Pick your heart rate monitor. Start sharing on the device first.');
+    log('calling requestDevice, filtered on heart rate service');
+
+    const hrDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [HR_SERVICE] }],
+      optionalServices: [HR_SERVICE]
+    });
+
+    log('picked: ' + (hrDevice.name || '(unnamed)'));
+    hrDevice.addEventListener('gattserverdisconnected', () => {
+      log('heart rate monitor disconnected');
+      el('v-hr').dataset.stale = 'yes';
+      el('v-rr').dataset.stale = 'yes';
+    });
+
+    stage = 'gatt.connect';
+    const server = await hrDevice.gatt.connect();
+
+    stage = 'getPrimaryService';
+    const service = await server.getPrimaryService(HR_SERVICE);
+
+    stage = 'getCharacteristic';
+    const characteristic = await service.getCharacteristic(HR_MEASUREMENT);
+
+    stage = 'startNotifications';
+    await characteristic.startNotifications();
+    characteristic.addEventListener('characteristicvaluechanged', onHeartRate);
+
+    log('heart rate notifications started');
+    setStatus('Heart rate connected. Bike connection is unaffected.');
+  } catch (err) {
+    const detail = describeError(err);
+    log('HR FAILED at ' + stage + '  ->  ' + detail);
+    setStatus('Heart rate failed at ' + stage + '. ' + detail, true);
+  }
+}
+
 async function keepAwake() {
   if (!('wakeLock' in navigator)) {
     setStatus('No screen wake lock in this browser. The screen will sleep and the stream will stall.', true);
@@ -519,6 +627,7 @@ async function keepAwake() {
 }
 
 el('connect').addEventListener('click', () => connect(false));
+el('connectHr').addEventListener('click', connectHeartRate);
 el('connectAny').addEventListener('click', () => connect(true));
 el('wake').addEventListener('click', keepAwake);
 </script>

@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Spotify control test</title>
+<style>
+  :root {
+    --ink:        #14202a;
+    --panel:      #1d2c38;
+    --panel-edge: #2b3f4f;
+    --bright:     #eef4f7;
+    --muted:      #8199a9;
+    --signal:     #f0a537;
+    --fault:      #e0604f;
+    --live:       #5fc9a6;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    background: var(--ink);
+    color: var(--bright);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body { padding: 18px 16px 48px; max-width: 560px; margin: 0 auto; }
+
+  .bar { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+
+  h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin: 0; flex: 1; }
+
+  .lamp { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .lamp[data-state="live"]  { background: var(--live); }
+  .lamp[data-state="fault"] { background: var(--fault); }
+
+  button {
+    font: inherit; font-size: 15px; font-weight: 500;
+    color: var(--ink); background: var(--signal);
+    border: 0; border-radius: 7px; padding: 11px 18px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; }
+  button.ghost {
+    background: transparent; color: var(--bright);
+    box-shadow: inset 0 0 0 1px var(--panel-edge);
+  }
+  button.big { width: 100%; font-size: 17px; padding: 16px; }
+  button:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 18px; }
+
+  input[type="text"] {
+    font: inherit; font-size: 15px;
+    width: 100%;
+    color: var(--bright); background: var(--ink);
+    border: 0; box-shadow: inset 0 0 0 1px var(--panel-edge);
+    border-radius: 7px; padding: 12px 13px;
+    margin-bottom: 10px;
+  }
+  input::placeholder { color: var(--muted); }
+
+  #status { font-size: 14px; color: var(--muted); line-height: 1.5; margin: 0 0 22px; min-height: 21px; }
+  #status.fault { color: var(--fault); }
+
+  .panel { background: var(--panel); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+  .panel h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; }
+  .panel p { font-size: 13px; color: var(--muted); margin: 0 0 12px; line-height: 1.5; }
+
+  .now { font-size: 21px; font-weight: 500; line-height: 1.3; margin-bottom: 6px; }
+  .now-sub { font-size: 14px; color: var(--muted); }
+
+  pre {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; line-height: 1.65;
+    color: var(--bright); background: var(--ink);
+    border-radius: 7px; padding: 12px; margin: 0;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  pre .warn { color: var(--fault); }
+  pre .ok   { color: var(--live); }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span class="lamp" id="lamp" data-state="idle"></span>
+  <h1>Spotify control test</h1>
+</div>
+
+<div class="panel">
+  <h2>Setup</h2>
+  <p>Create an app at the Spotify developer dashboard, then paste its client ID here. Register the redirect URI below exactly as shown, character for character.</p>
+  <input type="text" id="clientId" placeholder="Client ID from the dashboard" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <pre id="redirectUri">...</pre>
+</div>
+
+<button class="big" id="auth">Sign in to Spotify</button>
+<p id="status">Not signed in.</p>
+
+<div class="panel">
+  <h2>Now playing</h2>
+  <div class="now" id="track">Nothing</div>
+  <div class="now-sub" id="trackSub">Start something in the Spotify app first.</div>
+</div>
+
+<div class="controls">
+  <button id="refresh" class="ghost">Read state</button>
+  <button id="playpause" class="ghost">Play / pause</button>
+  <button id="next" class="ghost">Next</button>
+  <button id="devices" class="ghost">List devices</button>
+</div>
+
+<div class="panel">
+  <h2>Transition timing test</h2>
+  <p>Polls once a second and logs each track change with its reported position. When you hear a transition begin, tap the button. The gap between what you heard and what the API reported is the offset your ride cues would inherit.</p>
+  <div class="controls">
+    <button id="startPoll">Start polling</button>
+    <button id="mark" class="ghost">I hear the transition</button>
+  </div>
+  <pre id="timing">Not polling.</pre>
+</div>
+
+<div class="panel">
+  <h2>Log</h2>
+  <pre id="log">Nothing yet.</pre>
+</div>
+
+<script>
+'use strict';
+
+const AUTH_BASE = 'https://accounts.spotify.com/authorize';
+const TOKEN_URL = 'https://accounts.spotify.com/api/token';
+const API = 'https://api.spotify.com/v1';
+
+const SCOPES = [
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'user-read-currently-playing'
+].join(' ');
+
+// Must match the dashboard entry exactly. Query strings and fragments are
+// stripped so a return trip doesn't change the value.
+const REDIRECT_URI = location.origin + location.pathname;
+
+const el = id => document.getElementById(id);
+
+let logLines = [];
+function log(text) {
+  const t = new Date().toISOString().slice(11, 23);
+  logLines.push(t + '  ' + text);
+  el('log').textContent = logLines.slice(-50).join('\n');
+}
+
+function setStatus(text, fault) {
+  const s = el('status');
+  s.textContent = text;
+  s.classList.toggle('fault', !!fault);
+}
+
+function setLamp(state) { el('lamp').dataset.state = state; }
+
+/* ---------- storage, with a fallback if WebKit blocks localStorage ---------- */
+
+const mem = {};
+function store(k, v) {
+  try { localStorage.setItem(k, v); } catch (e) { mem[k] = v; log('localStorage blocked, using memory'); }
+}
+function load(k) {
+  try { return localStorage.getItem(k) ?? mem[k] ?? null; } catch (e) { return mem[k] ?? null; }
+}
+function drop(k) {
+  try { localStorage.removeItem(k); } catch (e) {}
+  delete mem[k];
+}
+
+/* ---------- PKCE ---------- */
+
+function randomString(len) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  const bytes = crypto.getRandomValues(new Uint8Array(len));
+  return Array.from(bytes, b => chars[b % chars.length]).join('');
+}
+
+async function challengeFor(verifier) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  let bin = '';
+  for (const b of new Uint8Array(digest)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function beginAuth() {
+  const clientId = el('clientId').value.trim();
+  if (!clientId) { setStatus('Paste your client ID first.', true); return; }
+  store('client_id', clientId);
+
+  if (!crypto.subtle) {
+    setStatus('No Web Crypto here. PKCE needs it, and it needs a secure context.', true);
+    return;
+  }
+
+  const verifier = randomString(64);
+  store('verifier', verifier);
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    redirect_uri: REDIRECT_URI,
+    code_challenge_method: 'S256',
+    code_challenge: await challengeFor(verifier),
+    scope: SCOPES
+  });
+
+  log('redirecting to Spotify authorize');
+  location.href = AUTH_BASE + '?' + params.toString();
+}
+
+async function exchangeCode(code) {
+  const clientId = load('client_id');
+  const verifier = load('verifier');
+
+  if (!verifier) {
+    setStatus('Came back with a code but the verifier is gone. Storage was cleared between hops.', true);
+    log('FAILED: verifier missing after redirect');
+    return;
+  }
+
+  log('exchanging code for token');
+
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      grant_type: 'authorization_code',
+      code: code,
+      redirect_uri: REDIRECT_URI,
+      code_verifier: verifier
+    })
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    setLamp('fault');
+    setStatus('Token exchange failed: ' + (data.error_description || data.error || res.status), true);
+    log('token exchange FAILED: ' + JSON.stringify(data));
+    return;
+  }
+
+  store('access_token', data.access_token);
+  if (data.refresh_token) store('refresh_token', data.refresh_token);
+  store('expires_at', String(Date.now() + (data.expires_in * 1000)));
+  drop('verifier');
+
+  setLamp('live');
+  setStatus('Signed in. Token valid for about ' + Math.round(data.expires_in / 60) + ' minutes.');
+  log('token received, scopes: ' + (data.scope || '(none reported)'));
+
+  readState();
+}
+
+async function refreshToken() {
+  const rt = load('refresh_token');
+  if (!rt) return false;
+
+  log('refreshing token');
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: load('client_id'),
+      grant_type: 'refresh_token',
+      refresh_token: rt
+    })
+  });
+
+  const data = await res.json();
+  if (!res.ok) { log('refresh FAILED: ' + JSON.stringify(data)); return false; }
+
+  store('access_token', data.access_token);
+  if (data.refresh_token) store('refresh_token', data.refresh_token);
+  store('expires_at', String(Date.now() + (data.expires_in * 1000)));
+  log('token refreshed');
+  return true;
+}
+
+/* ---------- API calls ---------- */
+
+async function call(path, options, retried) {
+  const token = load('access_token');
+  if (!token) { setStatus('Not signed in.', true); return null; }
+
+  const res = await fetch(API + path, Object.assign({}, options, {
+    headers: Object.assign({ Authorization: 'Bearer ' + token }, (options || {}).headers)
+  }));
+
+  if (res.status === 401 && !retried) {
+    if (await refreshToken()) return call(path, options, true);
+    setStatus('Token expired and refresh failed. Sign in again.', true);
+    return null;
+  }
+
+  // 204 means success with nothing to return, which is normal for playback commands.
+  if (res.status === 204) return { ok: true, empty: true };
+
+  if (res.status === 404) {
+    setStatus('No active Spotify device. Play something in the Spotify app, then try again.', true);
+    log(path + ' -> 404, no active device');
+    return null;
+  }
+
+  let body = null;
+  try { body = await res.json(); } catch (e) {}
+
+  if (!res.ok) {
+    setStatus('API ' + res.status + ': ' + ((body && body.error && body.error.message) || 'failed'), true);
+    log(path + ' -> ' + res.status + ' ' + JSON.stringify(body));
+    return null;
+  }
+
+  return body;
+}
+
+let lastTrackId = null;
+let lastChangeAt = null;
+
+function renderNowPlaying(state) {
+  if (!state || !state.item) {
+    el('track').textContent = 'Nothing playing';
+    el('trackSub').textContent = 'Start something in the Spotify app.';
+    return;
+  }
+
+  const artists = state.item.artists.map(a => a.name).join(', ');
+  el('track').textContent = state.item.name;
+  el('trackSub').textContent = artists + '  ·  ' +
+    (state.is_playing ? 'playing' : 'paused') + '  ·  ' +
+    Math.floor(state.progress_ms / 1000) + 's of ' +
+    Math.floor(state.item.duration_ms / 1000) + 's' +
+    (state.device ? '  ·  ' + state.device.name : '');
+
+  if (state.item.id !== lastTrackId) {
+    lastTrackId = state.item.id;
+    lastChangeAt = performance.now();
+    appendTiming('API reports new track: ' + state.item.name +
+                 ' at position ' + state.progress_ms + 'ms');
+  }
+}
+
+async function readState() {
+  const state = await call('/me/player');
+  if (state) renderNowPlaying(state);
+  return state;
+}
+
+async function togglePlay() {
+  const state = await call('/me/player');
+  if (!state) return;
+  await call(state.is_playing ? '/me/player/pause' : '/me/player/play', { method: 'PUT' });
+  log(state.is_playing ? 'paused' : 'resumed');
+  setTimeout(readState, 400);
+}
+
+async function nextTrack() {
+  await call('/me/player/next', { method: 'POST' });
+  log('skipped');
+  setTimeout(readState, 600);
+}
+
+async function listDevices() {
+  const data = await call('/me/player/devices');
+  if (!data) return;
+  if (!data.devices.length) { log('no devices visible, open Spotify and play something'); return; }
+  data.devices.forEach(d => {
+    log('device: ' + d.name + ' [' + d.type + ']' + (d.is_active ? ' ACTIVE' : ''));
+  });
+}
+
+/* ---------- transition timing ---------- */
+
+let timingLines = [];
+let pollTimer = null;
+
+function appendTiming(text) {
+  const t = new Date().toISOString().slice(11, 23);
+  timingLines.push(t + '  ' + text);
+  el('timing').textContent = timingLines.slice(-30).join('\n');
+}
+
+function togglePoll() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    el('startPoll').textContent = 'Start polling';
+    appendTiming('polling stopped');
+    return;
+  }
+  pollTimer = setInterval(readState, 1000);
+  el('startPoll').textContent = 'Stop polling';
+  timingLines = [];
+  appendTiming('polling once a second');
+}
+
+function markHeard() {
+  if (lastChangeAt === null) {
+    appendTiming('heard a transition, but the API has not reported any track change yet');
+    return;
+  }
+  const delta = Math.round(performance.now() - lastChangeAt);
+  appendTiming('YOU HEARD IT: ' + delta + 'ms after the API reported the change');
+}
+
+/* ---------- boot ---------- */
+
+el('redirectUri').textContent = REDIRECT_URI;
+
+const saved = load('client_id');
+if (saved) el('clientId').value = saved;
+
+const params = new URLSearchParams(location.search);
+
+if (params.has('error')) {
+  setLamp('fault');
+  setStatus('Spotify refused: ' + params.get('error'), true);
+  log('authorize returned error=' + params.get('error'));
+  history.replaceState({}, '', REDIRECT_URI);
+} else if (params.has('code')) {
+  log('returned from Spotify with an authorization code');
+  const code = params.get('code');
+  history.replaceState({}, '', REDIRECT_URI);
+  exchangeCode(code);
+} else if (load('access_token')) {
+  const expires = parseInt(load('expires_at') || '0', 10);
+  if (Date.now() < expires) {
+    setLamp('live');
+    setStatus('Already signed in from a previous session.');
+    readState();
+  } else {
+    log('stored token expired, attempting refresh');
+    refreshToken().then(ok => {
+      if (ok) { setLamp('live'); setStatus('Token refreshed.'); readState(); }
+      else setStatus('Stored token expired. Sign in again.', true);
+    });
+  }
+}
+
+el('auth').addEventListener('click', beginAuth);
+el('refresh').addEventListener('click', readState);
+el('playpause').addEventListener('click', togglePlay);
+el('next').addEventListener('click', nextTrack);
+el('devices').addEventListener('click', listDevices);
+el('startPoll').addEventListener('click', togglePoll);
+el('mark').addEventListener('click', markHeard);
+</script>
+
+</body>
+</html>
